@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -87,19 +88,31 @@ const (
 )
 
 func (c *Client) SendSignal(signal domain.OrderSignal) error {
-	payload := webhookPayload{
+	return c.post(webhookPayload{
 		Username: "AlgoTrader 🤖",
-		Embeds: []embed{
-			{
-				Title:       fmt.Sprintf("📊 %s", signal.TradingSymbol),
-				Description: fmt.Sprintf("**%s** triggered the **%s** strategy.", signal.TradingSymbol, signal.StrategyName),
-				Color:       colorGreen,
-				Footer:      footer{Text: "AlgoTrader Engine"},
-				Timestamp:   signal.SignalTime.Format(time.RFC3339),
-			},
-		},
+		Embeds:   []embed{signalEmbed(signal)},
+	})
+}
+
+// signalEmbed renders a signal: green for long, red for short, with the price
+// when known.
+func signalEmbed(signal domain.OrderSignal) embed {
+	color := colorGreen
+	if signal.Direction == domain.Short {
+		color = colorRed
 	}
-	return c.post(payload)
+	desc := fmt.Sprintf("**%s** triggered **%s** · %s",
+		signal.TradingSymbol, signal.StrategyName, strings.ToUpper(signal.Direction.String()))
+	if signal.Price > 0 {
+		desc += fmt.Sprintf(" @ ₹%.2f", signal.Price)
+	}
+	return embed{
+		Title:       fmt.Sprintf("📊 %s", signal.TradingSymbol),
+		Description: desc,
+		Color:       color,
+		Footer:      footer{Text: "AlgoTrader Engine"},
+		Timestamp:   signal.SignalTime.Format(time.RFC3339),
+	}
 }
 
 // SendAlert posts a plain informational or warning message to Discord.

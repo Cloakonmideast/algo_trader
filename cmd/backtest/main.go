@@ -20,6 +20,8 @@
 package main
 
 import (
+	"algotrader/internal/transport/supabase"
+	"context"
 	"encoding/csv"
 	"flag"
 	"fmt"
@@ -164,22 +166,22 @@ func main() {
 	results := make([]*backtest.Result, 0, len(specs))
 	for _, spec := range specs {
 		cfg := backtest.Config{
-			DBPath:       *dbPath,
-			Tokens:       tokens,
-			Symbols:      symbols,
-			Horizons:     horizons,
-			Warmup:       spec.Warmup,
-			From:         from,
-			To:           to,
-			CostBps:      *cost,
-			MaxMovePct:   *maxMove,
-			CooldownDays: *cooldown,
-			StopSMA:      *stopSMA,
+			DBPath:         *dbPath,
+			Tokens:         tokens,
+			Symbols:        symbols,
+			Horizons:       horizons,
+			Warmup:         spec.Warmup,
+			From:           from,
+			To:             to,
+			CostBps:        *cost,
+			MaxMovePct:     *maxMove,
+			CooldownDays:   *cooldown,
+			StopSMA:        *stopSMA,
 			StopTrailLow:   *stopTrail,
 			StopIntraday:   *stopIntra,
 			StopMaxLossPct: *stopMaxLoss,
 			Workers:        *workers,
-			NewStrategy:  spec.Factory,
+			NewStrategy:    spec.Factory,
 		}
 		if !*quiet {
 			cfg.Progress = progressPrinter(spec.Name)
@@ -374,8 +376,11 @@ func selectUniverse(mode string, dbTokens []uint32, symbols map[uint32]string) (
 // or the API call errors, so the backtester stays usable offline.
 func fetchSymbolsFromKite() (map[uint32]string, bool) {
 	apiKey := os.Getenv("KITE_API_KEY")
-	accessToken := os.Getenv("KITE_ACCESS_TOKEN")
-	if strings.TrimSpace(apiKey) == "" || strings.TrimSpace(accessToken) == "" {
+	if strings.TrimSpace(apiKey) == "" {
+		return nil, false
+	}
+	accessToken, err := supabase.ResolveAccessToken(context.Background())
+	if err != nil {
 		return nil, false
 	}
 

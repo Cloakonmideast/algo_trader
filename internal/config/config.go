@@ -19,8 +19,17 @@ type Config struct {
 	// Discord webhook for system/lifecycle alert notifications
 	DiscordWebhookURL string
 
+	// Supabase project behind the website. When both are set, the engine saves
+	// every signal there and takes the daily Kite token from the website's
+	// "Log in to Kite" button instead of KITE_ACCESS_TOKEN.
+	SupabaseURL        string
+	SupabaseServiceKey string
+
+	// SiteURL is the website address, linked from "Kite login needed" reminders.
+	SiteURL string
+
 	// Discord Bot credentials for interactive signal messages (buttons + modals).
-	// These are distinct from the webhook and require a Discord Application + Bot.
+	// Optional: nothing uses them yet.
 	DiscordBotToken      string
 	DiscordApplicationID string
 	DiscordPublicKey     string
@@ -65,18 +74,28 @@ func Load() *Config {
 	cfg := &Config{
 		KiteAPIKey:           mustGetEnv("KITE_API_KEY"),
 		KiteAPISecret:        os.Getenv("KITE_API_SECRET"), // optional: not currently used at runtime
-		KiteAccessToken:      mustGetEnv("KITE_ACCESS_TOKEN"),
+		KiteAccessToken:      strings.TrimSpace(os.Getenv("KITE_ACCESS_TOKEN")),
 		DiscordWebhookURL:    mustGetEnv("DISCORD_WEBHOOK_URL"),
-		DiscordBotToken:      mustGetEnv("DISCORD_BOT_TOKEN"),
-		DiscordApplicationID: mustGetEnv("DISCORD_APPLICATION_ID"),
-		DiscordPublicKey:     mustGetEnv("DISCORD_PUBLIC_KEY"),
-		DiscordChannelID:     mustGetEnv("DISCORD_CHANNEL_ID"),
+		DiscordBotToken:      os.Getenv("DISCORD_BOT_TOKEN"),
+		DiscordApplicationID: os.Getenv("DISCORD_APPLICATION_ID"),
+		DiscordPublicKey:     os.Getenv("DISCORD_PUBLIC_KEY"),
+		DiscordChannelID:     os.Getenv("DISCORD_CHANNEL_ID"),
+		SupabaseURL:          strings.TrimSpace(os.Getenv("SUPABASE_URL")),
+		SupabaseServiceKey:   strings.TrimSpace(os.Getenv("SUPABASE_SERVICE_KEY")),
+		SiteURL:              strings.TrimRight(strings.TrimSpace(os.Getenv("SITE_URL")), "/"),
 		InteractionsPort:     getEnvWithDefault("INTERACTIONS_PORT", "8080"),
 		DatabasePath:         getEnvWithDefault("DATABASE_PATH", "market_data.db"),
 		WorkerPoolSize:       getIntEnvWithDefault("WORKER_POOL_SIZE", 50),
 		TickChannelCapacity:  getIntEnvWithDefault("TICK_CHANNEL_CAPACITY", 50000),
 		ScanNifty500:         scanNifty500,
 		ScanFullNSE:          scanFullNSE,
+	}
+
+	switch {
+	case (cfg.SupabaseURL == "") != (cfg.SupabaseServiceKey == ""):
+		panic("config: set both SUPABASE_URL and SUPABASE_SERVICE_KEY, or neither")
+	case !cfg.UseSupabase() && cfg.KiteAccessToken == "":
+		panic("config: KITE_ACCESS_TOKEN is required when SUPABASE_URL/SUPABASE_SERVICE_KEY are not set")
 	}
 
 	if !scanNifty500 && !scanFullNSE {
@@ -89,6 +108,12 @@ func Load() *Config {
 	}
 
 	return cfg
+}
+
+// UseSupabase reports whether the engine should save signals to Supabase and
+// take the Kite token from the website.
+func (c *Config) UseSupabase() bool {
+	return c.SupabaseURL != "" && c.SupabaseServiceKey != ""
 }
 
 // mustGetEnv retrieves an environment variable and panics if it is not set or empty.

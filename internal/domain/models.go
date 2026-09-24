@@ -20,6 +20,21 @@ type OrderSignal struct {
 
 	// SignalTime is the UTC timestamp when this signal was generated.
 	SignalTime time.Time
+
+	// Strategy is the strategy family ("RSI", "IchimokuKinkoHyo"); StrategyName
+	// above is the exact variant. The processor fills it from the registered
+	// strategy's Name() when a strategy leaves it empty.
+	Strategy string
+
+	// Price is the last traded price when the signal fired. The processor fills
+	// it from the tick when a strategy leaves it zero.
+	Price float64
+
+	// Direction is derived from StrategyName by the processor (DirectionOf).
+	Direction Direction
+
+	// RSI carries the readings behind an RSI signal; nil for other strategies.
+	RSI *RSIReadings
 }
 
 // String returns a human-readable representation of the OrderSignal for logging and notifications.

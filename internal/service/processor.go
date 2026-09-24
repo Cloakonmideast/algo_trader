@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"log"
 	"runtime/debug"
 	"sync"
@@ -34,7 +35,15 @@ type Processor struct {
 	// symbolMap provides token → trading symbol resolution for alert formatting.
 	// Written once at construction; safe for concurrent reads without a lock.
 	symbolMap map[uint32]string
+
+	// store saves signals for the website (nil = Discord only); pending holds
+	// saves that failed and are retried.
+	store   SignalSaver
+	pending *saveQueue
 }
+
+// maxQueuedSaves bounds the retry queue during a long Supabase outage.
+const maxQueuedSaves = 10_000
 
 // NewProcessor constructs a Processor with the given tick channel capacity and worker pool size.
 // Strategies can be registered after construction via RegisterStrategy.
@@ -146,6 +155,8 @@ func (p *Processor) processTick(tick models.Tick) {
 		}()
 
 		for _, signal := range signals {
+			signal = enrich(signal, strat.Name(), tick)
+
 			// Resolve TradingSymbol from the lookup map so Discord alerts show the
 			// instrument name (e.g. "RELIANCE") instead of an empty string.
 			if signal.TradingSymbol == "" {
@@ -170,12 +181,47 @@ func (p *Processor) processTick(tick models.Tick) {
 	}
 }
 
-// dispatchSignal sends the OrderSignal notification via Discord.
-// Since StateRegistry now uses daily locks, we NO LONGER release the lock here.
-// This guarantees we only ever send ONE alert per stock per day.
+// UseStore makes the processor save every signal (to Supabase, for the website)
+// before alerting, and starts the retry loop for saves that fail. Call it
+// before Start.
+func (p *Processor) UseStore(saver SignalSaver) {
+	p.store = saver
+	p.pending = newSaveQueue(maxQueuedSaves)
+}
+
+// StartRetries retries failed saves every minute until ctx is cancelled.
+func (p *Processor) StartRetries(ctx context.Context) {
+	if p.store != nil {
+		go p.pending.runRetries(ctx, p.store, time.Minute)
+	}
+}
+
+// dispatchSignal saves the signal, then sends the Discord alert.
+//
+// The in-memory StateRegistry already stops repeats within this process; the
+// saved row's unique key (signal, stock, day) also stops repeats across engine
+// restarts, so a duplicate save means "already alerted today" and is skipped.
+// If the save fails, the alert still goes out and the save is retried later:
+// a Supabase outage must never cost an alert.
 // It runs in its own goroutine to avoid blocking the worker pool.
 func (p *Processor) dispatchSignal(signal domain.OrderSignal) {
 	log.Printf("[processor] Signal fired: %s", signal.String())
+
+	if p.store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		inserted, err := p.store.InsertSignal(ctx, signal)
+		cancel()
+		switch {
+		case err != nil:
+			log.Printf("[processor] WARNING: could not save signal (will retry): %v", err)
+			if !p.pending.add(signal) {
+				log.Printf("[processor] WARNING: retry queue full — dropping save for %s %s", signal.TradingSymbol, signal.StrategyName)
+			}
+		case !inserted:
+			log.Printf("[processor] %s %s already saved today — skipping duplicate alert", signal.TradingSymbol, signal.StrategyName)
+			return
+		}
+	}
 
 	if err := p.discord.SendSignal(signal); err != nil {
 		log.Printf("[processor] ERROR sending Discord alert for token %d (strategy: %s): %v",

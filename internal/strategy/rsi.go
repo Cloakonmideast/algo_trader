@@ -463,13 +463,29 @@ func (r *RSI) EvaluateAll(tick models.Tick, ctx *domain.MarketContext) []domain.
 		return nil
 	}
 	signalTime := time.Now().UTC()
+	readings := readingsOf(x)
 	signals := make([]domain.OrderSignal, 0, len(names))
 	for _, name := range names {
 		signals = append(signals, domain.OrderSignal{
 			InstrumentToken: tick.InstrumentToken,
 			StrategyName:    name,
 			SignalTime:      signalTime,
+			Strategy:        r.Name(),
+			Price:           currentPrice,
+			RSI:             readings,
 		})
 	}
 	return signals
+}
+
+// readingsOf copies the readings a signal was based on, for the website and
+// exports. Weekly and monthly are flagged unknown when there wasn't enough history.
+func readingsOf(x rsiReadings) *domain.RSIReadings {
+	return &domain.RSIReadings{
+		Daily:     x.Daily,
+		Weekly:    x.Weekly,
+		WeeklyOK:  x.WeeklyOK,
+		Monthly:   x.Monthly,
+		MonthlyOK: x.MonthlyOK,
+	}
 }

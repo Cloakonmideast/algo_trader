@@ -383,3 +383,10 @@ func TestSignalNamesCarryDirection(t *testing.T) {
 		t.Errorf("expected 12 RSI signal names, got %d", n)
 	}
 }
+
+func TestReadingsOfCarriesKnownTimeframesOnly(t *testing.T) {
+	got := readingsOf(rsiReadings{Daily: 61.5, Weekly: 64, WeeklyOK: true, Monthly: 0, MonthlyOK: false})
+	if got.Daily != 61.5 || got.Weekly != 64 || !got.WeeklyOK || got.MonthlyOK {
+		t.Errorf("readingsOf = %+v", got)
+	}
+}

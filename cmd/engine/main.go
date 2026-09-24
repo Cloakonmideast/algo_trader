@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	"algotrader/internal/config"
 	"algotrader/internal/domain"
@@ -15,6 +18,7 @@ import (
 	"algotrader/internal/service"
 	"algotrader/internal/strategy"
 	"algotrader/internal/transport/discord"
+	"algotrader/internal/transport/supabase"
 
 	kiteconnect "github.com/zerodha/gokiteconnect/v4"
 )
@@ -30,6 +34,10 @@ func main() {
 	if err := logger.Init("logs/algotrader.log"); err != nil {
 		log.Printf("[main] WARNING: could not initialise JSON log file: %v", err)
 	}
+
+	// Cancelled on SIGINT/SIGTERM, including while waiting for the day's Kite login.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	// ── 1. Load Configuration (fail-fast on missing env vars) ─────────────────
 	log.Println("[main] Loading configuration from environment variables")
@@ -59,12 +67,44 @@ func main() {
 	log.Println("[main] Initializing MarketContext RAM cache")
 	mktCtx := domain.NewMarketContext()
 
-	// ── 4. Initialize Zerodha Kite Connect REST Client ────────────────────────
+	// ── 4. Discord (lifecycle alerts, signal alerts, login reminders) ─────────
+	log.Println("[main] Initializing Discord webhook transport client")
+	discordClient := discord.NewClient(cfg.DiscordWebhookURL)
+
+	// ── 5. Kite access token ──────────────────────────────────────────────────
+	// With Supabase configured, the token comes from the website's "Log in to
+	// Kite" button and the engine waits for it; otherwise KITE_ACCESS_TOKEN.
+	var (
+		supa        *supabase.Client
+		watcher     *service.SessionWatcher
+		feed        atomic.Pointer[service.LiveFeed]
+		instruments atomic.Int64
+		accessToken = cfg.KiteAccessToken
+	)
+	if cfg.UseSupabase() {
+		log.Println("[main] Supabase configured — signals go to the website; the Kite token comes from its login button")
+		supa = supabase.New(cfg.SupabaseURL, cfg.SupabaseServiceKey)
+		watcher = service.NewSessionWatcher(supa, time.Minute)
+		watcher.OnRemind = func() {
+			_ = discordClient.SendAlert("Kite login needed", loginHint(cfg.SiteURL), true)
+		}
+		// The heartbeat starts now so the website shows the engine alive while it waits.
+		go runHeartbeat(ctx, supa, watcher, &feed, &instruments)
+
+		accessToken, err = watcher.WaitForToken(ctx)
+		if err != nil {
+			log.Println("[main] Shutdown requested while waiting for the Kite login")
+			return
+		}
+		log.Println("[main] Kite token received from the website")
+	}
+
+	// ── 6. Initialize Zerodha Kite Connect REST Client ────────────────────────
 	log.Println("[main] Initializing Zerodha Kite Connect API client")
 	kc := kiteconnect.New(cfg.KiteAPIKey)
-	kc.SetAccessToken(cfg.KiteAccessToken)
+	kc.SetAccessToken(accessToken)
 
-	// ── 5. Resolve Instrument Token List ──────────────────────────────────────
+	// ── 7. Resolve Instrument Token List ──────────────────────────────────────
 	var tokens []uint32
 	if cfg.ScanNifty500 {
 		log.Println("[main] Discovering Nifty 500 instruments...")
@@ -83,30 +123,27 @@ func main() {
 	} else {
 		tokens = cfg.InstrumentTokens
 	}
+	instruments.Store(int64(len(tokens)))
 
-	// ── 5b. Build Token → Symbol Lookup Map ───────────────────────────────────
+	// ── 7b. Build Token → Symbol Lookup Map ───────────────────────────────────
 	// The Zerodha WebSocket binary packet does not carry the trading symbol;
 	// we resolve it here from the instrument master so alerts show real names.
 	log.Println("[main] Building token-to-symbol lookup map from Zerodha instrument master")
 	symbolMap := make(map[uint32]string, len(tokens))
-	if instruments, instErr := kc.GetInstrumentsByExchange("NSE"); instErr != nil {
+	if instrumentList, instErr := kc.GetInstrumentsByExchange("NSE"); instErr != nil {
 		log.Printf("[main] WARNING: could not fetch instrument master for symbol resolution: %v", instErr)
 	} else {
-		for _, inst := range instruments {
+		for _, inst := range instrumentList {
 			symbolMap[uint32(inst.InstrumentToken)] = inst.Tradingsymbol
 		}
 		log.Printf("[main] Symbol map built: %d entries", len(symbolMap))
 	}
 
-	// ── 6. Initialize Discord Webhook Client (system / lifecycle alerts) ──────
-	log.Println("[main] Initializing Discord webhook transport client")
-	discordClient := discord.NewClient(cfg.DiscordWebhookURL)
-
-	// ── 7. Initialize Domain StateRegistry ────────────────────────────────────
+	// ── 8. Initialize Domain StateRegistry ────────────────────────────────────
 	log.Println("[main] Initializing StateRegistry for concurrent signal deduplication")
 	registry := domain.NewStateRegistry()
 
-	// ── 8. Build Tick Processor ───────────────────────────────────────────────
+	// ── 9. Build Tick Processor ───────────────────────────────────────────────
 	log.Printf("[main] Building tick processor: %d workers, channel capacity %d",
 		cfg.WorkerPoolSize, cfg.TickChannelCapacity)
 	proc := service.NewProcessor(
@@ -117,6 +154,11 @@ func main() {
 		discordClient, // webhook: sends stock+strategy name alerts
 		symbolMap,
 	)
+	if supa != nil {
+		// Save every signal for the website before alerting; a duplicate save
+		// means it was already alerted today (e.g. before a restart).
+		proc.UseStore(supa)
+	}
 
 	// Register strategies — add more implementations here as needed.
 	proc.RegisterStrategy(strategy.NewIchimokuKinkoHyo())
@@ -134,20 +176,18 @@ func main() {
 		strategy.RSISignalNames()...,
 	))
 
-	// ── 9. Initialize Bootloader ──────────────────────────────────────────────
+	// ── 10. Initialize Bootloader ─────────────────────────────────────────────
 	log.Println("[main] Initializing pre-market bootloader")
 	bootloader := service.NewBootloader(db, mktCtx, kc)
 
-	// ── 10. Pre-market Boot Sequence ──────────────────────────────────────────
+	// ── 11. Pre-market Boot Sequence ──────────────────────────────────────────
 	// Populates the RAM cache from SQLite (fast path) or Zerodha API (first-run path).
-	// With full NSE mode, this runs 3 workers in parallel at Zerodha's 3 req/s limit.
 	log.Printf("[main] Executing pre-market boot sequence for %d tokens", len(tokens))
 	bootloader.Boot(tokens)
 	log.Printf("[main] Boot complete: RAM cache has data for %d tokens", mktCtx.TokenCount())
 
-	// ── 10.5 Purge Delisted Instruments from Database ─────────────────────────
+	// ── 11b. Purge Delisted Instruments from Database ─────────────────────────
 	// Remove candle rows for any token no longer present in the live NSE EQ list.
-	// This keeps the database clean as stocks get delisted or suspended over time.
 	if cfg.ScanFullNSE || cfg.ScanNifty500 {
 		log.Println("[main] Running delisted instrument cleanup...")
 		deleted, err := db.CleanupDelisted(tokens)
@@ -158,27 +198,43 @@ func main() {
 		}
 	}
 
-	// ── 11. Initialize & Start Market Scheduler ───────────────────────────────
+	// ── 12. Initialize & Start Market Scheduler ───────────────────────────────
 	log.Println("[main] Initializing market lifecycle scheduler")
 	sched := scheduler.NewMarketScheduler(bootloader, tokens)
 	sched.Start()
 
-	// ── 12. Start Tick Processor Worker Pool ──────────────────────────────────
+	// ── 13. Start Tick Processor Worker Pool ──────────────────────────────────
 	log.Println("[main] Starting tick processor worker pool")
 	proc.Start()
+	proc.StartRetries(ctx)
 
-	// ── 13. Initialize & Wire 3 WebSocket Tickers ─────────────────────────────
+	// ── 14. Live feed: 3 WebSocket connections ────────────────────────────────
 	// MultiTicker distributes all tokens across 3 independent Zerodha WebSocket
-	// connections (Zerodha's per-API-key limit), each carrying ~1/3 of all tokens.
-	log.Printf("[main] Initializing MultiTicker: 3 WebSocket connections for %d tokens", len(tokens))
-	mt := service.NewMultiTicker(
-		cfg.KiteAPIKey,
-		cfg.KiteAccessToken,
-		tokens,
-		proc.Enqueue,
-		discordClient,
-	)
-	mt.Start()
+	// connections (Zerodha's per-API-key limit). A WebSocket authenticates once,
+	// so LiveFeed rebuilds it whenever the Kite token changes.
+	log.Printf("[main] Initializing live feed: 3 WebSocket connections for %d tokens", len(tokens))
+	liveFeed := service.NewLiveFeed(func(token string) service.Ticker {
+		return service.NewMultiTicker(cfg.KiteAPIKey, token, tokens, proc.Enqueue, discordClient)
+	})
+	feed.Store(liveFeed)
+	liveFeed.Start(accessToken)
+
+	// ── 15. Follow the website's Kite login ───────────────────────────────────
+	if watcher != nil {
+		watcher.OnToken = func(tok string) {
+			kc.SetAccessToken(tok)
+			liveFeed.Start(tok)
+			_ = discordClient.SendAlert("Kite token updated",
+				"New login from the website — live feed reconnected. Refreshing candle data.", false)
+			bootloader.Boot(tokens)
+		}
+		watcher.OnExpired = func() {
+			liveFeed.Stop()
+			_ = discordClient.SendAlert("Kite session expired",
+				"Live feed stopped until the next login. "+loginHint(cfg.SiteURL), true)
+		}
+		go watcher.Run(ctx)
+	}
 
 	// Send a single consolidated Discord alert after all WS connections initialise.
 	_ = discordClient.SendAlert(
@@ -187,23 +243,16 @@ func main() {
 		false,
 	)
 
-	// ── 14. Block on OS Signals — Graceful Shutdown ───────────────────────────
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-
-	sig := <-quit
-	log.Printf("[main] Received OS signal: %s — initiating graceful shutdown", sig)
-	_ = discordClient.SendAlert(
-		"AlgoTrader Shutting Down",
-		fmt.Sprintf("Signal received: %s. Graceful shutdown initiated.", sig),
-		true,
-	)
+	// ── 16. Block until SIGINT/SIGTERM — Graceful Shutdown ────────────────────
+	<-ctx.Done()
+	log.Println("[main] Shutdown signal received — initiating graceful shutdown")
+	_ = discordClient.SendAlert("AlgoTrader Shutting Down", "Shutdown signal received. Graceful shutdown initiated.", true)
 
 	// Shutdown sequence (reverse of initialisation order):
 
-	// 1. Stop all 3 WebSocket connections to prevent new ticks from arriving.
-	log.Println("[main] Step 1/4: Closing MultiTicker (3 WebSocket connections)")
-	mt.Stop()
+	// 1. Stop the live feed to prevent new ticks from arriving.
+	log.Println("[main] Step 1/4: Closing live feed (3 WebSocket connections)")
+	liveFeed.Stop()
 
 	// 2. Stop the cron scheduler (waits for any in-progress job to finish).
 	log.Println("[main] Step 2/4: Stopping market lifecycle scheduler")
@@ -222,6 +271,48 @@ func main() {
 	if err := logger.Close(); err != nil {
 		log.Printf("[main] WARNING: error closing log file: %v", err)
 	}
+}
+
+// runHeartbeat tells the website the engine is alive, once a minute, until ctx
+// is cancelled. It also keeps the free Supabase project from pausing.
+func runHeartbeat(ctx context.Context, supa *supabase.Client, watcher *service.SessionWatcher,
+	feed *atomic.Pointer[service.LiveFeed], instruments *atomic.Int64) {
+	beat := func() {
+		connected := false
+		if f := feed.Load(); f != nil {
+			connected = f.Connected()
+		}
+		hctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		err := supa.Heartbeat(hctx, supabase.EngineStatus{
+			LastSeen:      time.Now(),
+			Instruments:   int(instruments.Load()),
+			FeedConnected: connected,
+			TokenValid:    watcher.Valid(),
+		})
+		if err != nil && ctx.Err() == nil {
+			log.Printf("[main] WARNING: heartbeat failed: %v", err)
+		}
+	}
+
+	beat()
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			beat()
+		}
+	}
+}
+
+func loginHint(siteURL string) string {
+	if siteURL == "" {
+		return "Open the website and click \"Log in to Kite\"."
+	}
+	return fmt.Sprintf("Log in: %s (click \"Log in to Kite\").", siteURL)
 }
 
 // printBanner outputs the application startup header.

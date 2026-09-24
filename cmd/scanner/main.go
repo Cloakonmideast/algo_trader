@@ -13,6 +13,8 @@
 package main
 
 import (
+	"algotrader/internal/transport/supabase"
+	"context"
 	"database/sql"
 	"encoding/csv"
 	"flag"
@@ -70,9 +72,12 @@ func main() {
 `)
 	}
 
-	apiKey      := mustEnv("KITE_API_KEY")
-	accessToken := mustEnv("KITE_ACCESS_TOKEN")
-	dbPath      := getenvOr("DATABASE_PATH", "market_data.db")
+	apiKey := mustEnv("KITE_API_KEY")
+	accessToken, err := supabase.ResolveAccessToken(context.Background())
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	dbPath := getenvOr("DATABASE_PATH", "market_data.db")
 
 	// ── 1. Build token→symbol map from Zerodha instrument master ─────────────
 	fmt.Println("[scanner] Fetching Zerodha NSE instrument master...")
@@ -146,39 +151,39 @@ func main() {
 		}
 
 		// Use last closed candle as "today" (offline mode — no live ticks)
-		last    := candles[len(candles)-1]
-		prev    := candles[len(candles)-2]  // the session before last
+		last := candles[len(candles)-1]
+		prev := candles[len(candles)-2] // the session before last
 
-		currentPrice  := last.Close
-		todayOpen     := last.Open
-		todayHigh     := last.High
-		todayLow      := last.Low
+		currentPrice := last.Close
+		todayOpen := last.Open
+		todayHigh := last.High
+		todayLow := last.Low
 		yesterdayClose := prev.Close
 
 		cnt := 26
 
 		// Conversion Line (9-period)
 		convCandles := candles[len(candles)-9:]
-		convLine    := periodMidpoint(convCandles, todayHigh, todayLow)
+		convLine := periodMidpoint(convCandles, todayHigh, todayLow)
 
 		// Base Line (26-period)
 		baseCandles := candles[len(candles)-26:]
-		baseLine    := periodMidpoint(baseCandles, todayHigh, todayLow)
+		baseLine := periodMidpoint(baseCandles, todayHigh, todayLow)
 
 		// Leading Span A (shifted back 26)
-		sess26         := candles[len(candles)-cnt]
-		pastConv       := periodMidpoint(candles[len(candles)-(cnt+8):len(candles)-cnt], sess26.High, sess26.Low)
-		pastBase       := periodMidpoint(candles[len(candles)-(cnt+25):len(candles)-cnt], sess26.High, sess26.Low)
-		leadingSpanA   := (pastConv + pastBase) / 2.0
+		sess26 := candles[len(candles)-cnt]
+		pastConv := periodMidpoint(candles[len(candles)-(cnt+8):len(candles)-cnt], sess26.High, sess26.Low)
+		pastBase := periodMidpoint(candles[len(candles)-(cnt+25):len(candles)-cnt], sess26.High, sess26.Low)
+		leadingSpanA := (pastConv + pastBase) / 2.0
 
 		// Leading Span A (shifted back 52)
-		sess52         := candles[len(candles)-(cnt+26)]
-		pastConv52     := periodMidpoint(candles[len(candles)-(cnt+26+8):len(candles)-(cnt+26)], sess52.High, sess52.Low)
-		pastBase52     := periodMidpoint(candles[len(candles)-(cnt+26+25):len(candles)-(cnt+26)], sess52.High, sess52.Low)
+		sess52 := candles[len(candles)-(cnt+26)]
+		pastConv52 := periodMidpoint(candles[len(candles)-(cnt+26+8):len(candles)-(cnt+26)], sess52.High, sess52.Low)
+		pastBase52 := periodMidpoint(candles[len(candles)-(cnt+26+25):len(candles)-(cnt+26)], sess52.High, sess52.Low)
 		leadingSpanA52 := (pastConv52 + pastBase52) / 2.0
 
 		// Leading Span B (shifted back 26, 52-period window)
-		leadingSpanB   := periodMidpoint(candles[len(candles)-(cnt+51):len(candles)-cnt], sess26.High, sess26.Low)
+		leadingSpanB := periodMidpoint(candles[len(candles)-(cnt+51):len(candles)-cnt], sess26.High, sess26.Low)
 		leadingSpanB52 := periodMidpoint(candles[len(candles)-(cnt+26+51):len(candles)-(cnt+26)], sess52.High, sess52.Low)
 
 		// Lagging Span reference price
@@ -207,7 +212,7 @@ func main() {
 
 		// Condition 6 — cloud cross-out (intraday OR gap-open)
 		intradayBreakout := todayOpen <= cloudTop && currentPrice > cloudTop
-		gapOpenBreakout  := yesterdayClose <= cloudTop && todayOpen > cloudTop
+		gapOpenBreakout := yesterdayClose <= cloudTop && todayOpen > cloudTop
 		c6 := intradayBreakout || gapOpenBreakout
 
 		if c1 && c2 && c3 && c4 && c5 && c6 {

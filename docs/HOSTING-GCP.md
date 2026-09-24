@@ -183,19 +183,12 @@ Useful commands (in the browser SSH window):
 | `~/algotrader/deploy/update.sh` | After a `git push`: pull, test, rebuild, restart |
 | `top` | CPU/memory use, which is worth a look at 09:15–09:30 on the first days |
 
-## 7.10 The daily Kite token (until the engine update)
+## 7.10 The daily Kite token
 
-The engine still reads `KITE_ACCESS_TOKEN` from `.env`. Each trading morning,
-generate a token the old way (the PowerShell snippet in `readme`), then open
-the browser SSH window and run:
-
-```bash
-~/algotrader/deploy/set-token.sh <NEW_ACCESS_TOKEN>
-```
-
-This writes the token into `.env` and restarts the engine, which then loads
-data and connects. After the engine update this step goes away: the engine
-will take the token from **Log in to Kite** on the website.
+Same as `SETUP.md` step 7.9: click **Log in to Kite** on the website each
+trading morning, and the engine picks the token up within a minute. The
+server's `.env` needs `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` and `SITE_URL`, and
+no `KITE_ACCESS_TOKEN` (see `SETUP.md` step 7.7).
 
 ## 7.11 Things to know about the free server
 

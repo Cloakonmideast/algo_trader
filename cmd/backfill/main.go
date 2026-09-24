@@ -16,6 +16,7 @@
 package main
 
 import (
+	"algotrader/internal/transport/supabase"
 	"context"
 	"database/sql"
 	"flag"
@@ -65,7 +66,10 @@ func main() {
 
 	// ── Config ────────────────────────────────────────────────────────────────
 	apiKey := mustEnv("KITE_API_KEY")
-	accessToken := mustEnv("KITE_ACCESS_TOKEN")
+	accessToken, err := supabase.ResolveAccessToken(context.Background())
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
 	dbPath := getenvOr("DATABASE_PATH", "market_data.db")
 
 	// ── Kite client ───────────────────────────────────────────────────────────

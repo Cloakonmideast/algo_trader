@@ -11,10 +11,10 @@ What you end up with:
   passcode. It redeploys automatically on every push.
 - A **Log in to Kite** button that saves each day's access token.
 
-> The trading engine runs separately, on a free Oracle Cloud server (step 7). Until
-> the engine update that connects it to Supabase, the engine keeps sending
-> Discord alerts only. The site works (Kite login, test signal in step 6), but
-> real signals don't reach it yet, and the header shows "Engine never seen".
+> The trading engine runs separately, on a free Oracle Cloud server (step 7).
+> It saves every signal to Supabase (so it appears on the site within 30
+> seconds), sends the Discord alert, and takes the daily Kite token from the
+> site's **Log in to Kite** button.
 
 ---
 
@@ -374,12 +374,22 @@ That's about 300 MB, so it takes a few minutes. Back on the server,
 nano ~/algotrader/.env
 ```
 
-Paste the contents of your PC's `C:\vsc\algotrader\.env`, then fix two things:
+Paste the contents of your PC's `C:\vsc\algotrader\.env` (or copy it up with
+`scp` if pasting is awkward), then make these changes:
 
-- **Remove inline comments.** The service reads `KEY=value # note` as the
-  value `value # note`. Your `KITE_ACCESS_TOKEN=... # Generated daily...`
-  line must become just `KITE_ACCESS_TOKEN=...`. Comments on their own lines
-  are fine.
+- **Add the three website settings** at the end, with the same Supabase values
+  you gave Vercel in step 4.3:
+
+  ```bash
+  SUPABASE_URL=https://<project-id>.supabase.co
+  SUPABASE_SERVICE_KEY=<the secret / service_role key>
+  SITE_URL=https://<your-site>.vercel.app
+  ```
+
+- **Delete the `KITE_ACCESS_TOKEN=...` line.** With Supabase set, the engine
+  takes the token from the website's login instead.
+- **No inline comments.** The service reads `KEY=value # note` as the value
+  `value # note`. Comments on their own lines are fine.
 - `DATABASE_PATH=market_data.db` (the file you just copied).
 
 Save with `Ctrl+O`, `Enter`, `Ctrl+X`. Then lock the file down:
@@ -397,8 +407,10 @@ sudo systemctl enable --now algotrader
 journalctl -u algotrader -f      # live log; Ctrl+C stops watching (the engine keeps running)
 ```
 
-You should see the startup banner, "Boot complete", and a Discord
-"AlgoTrader Online" message. The service starts on boot and restarts itself
+If you haven't logged in to Kite today, the log says **"Waiting for today's
+Kite login"**. Click **Log in to Kite** on the website; within a minute the
+engine continues. You then see "Boot complete" and a Discord "AlgoTrader
+Online" message, and the website header shows **Engine just now**. The service starts on boot and restarts itself
 if it crashes.
 
 Useful commands:
@@ -412,18 +424,43 @@ Useful commands:
 | `~/algotrader/deploy/update.sh` | After a `git push`: pull, test, rebuild, restart |
 | `top` | CPU/memory use |
 
-### 7.9 The daily Kite token (until the engine update)
+### 7.9 How the daily Kite token works
 
-The engine still reads `KITE_ACCESS_TOKEN` from `.env`. Each trading morning,
-after generating a token the old way (the PowerShell snippet in `readme`):
+Nothing to do on the server. Each trading morning, click **Log in to Kite** on
+the website. Every minute the engine checks Supabase for that login:
 
-```powershell
-ssh -i $HOME\.ssh\oracle-algotrader.key ubuntu@<PUBLIC_IP> "~/algotrader/deploy/set-token.sh <NEW_ACCESS_TOKEN>"
-```
+- **New token:** it reconnects the live feed and refreshes candle data.
+  Discord says "Kite token updated".
+- **Token expired** (Zerodha expires them around 06:00): it stops the live
+  feed, so Discord isn't flooded with connection errors, and says "Kite
+  session expired".
+- **No login yet between 08:00 and 15:30 on a weekday:** Discord reminds you
+  every 30 minutes, with a link to the site.
 
-This writes the token into the server's `.env` and restarts the engine. After
-the engine update this step goes away: the engine will take the token from
-**Log in to Kite** on the website.
+Logging in again during the day is fine; the engine switches to the new token.
+
+### 7.9a Upgrading a server that runs an older engine
+
+If your server was set up before the engine saved signals to Supabase (its
+`.env` has `KITE_ACCESS_TOKEN` and no `SUPABASE_URL`):
+
+1. On this PC, push the latest code (`git add -A; git commit -m "..."; git push`).
+2. On the server, add the three settings from 7.7 and delete the
+   `KITE_ACCESS_TOKEN` line:
+
+   ```bash
+   nano ~/algotrader/.env
+   ```
+
+3. Pull, test, rebuild and restart:
+
+   ```bash
+   ~/algotrader/deploy/update.sh
+   ```
+
+4. Log in to Kite on the website if you haven't today, then watch
+   `journalctl -u algotrader -f`. The website header should show **Engine just
+   now** within a minute.
 
 ### 7.10 Keep the server from being reclaimed
 
@@ -443,8 +480,8 @@ If it's ever reclaimed, your signal history is safe in Supabase. You redo
 ## Daily routine
 
 Each trading morning: open the site on any device → **Log in to Kite** →
-Zerodha password + TOTP. One login covers every device. Until the engine
-update, also push that day's token to the server (step 7.9).
+Zerodha password + TOTP. One login covers every device and the engine on the
+server (step 7.9).
 
 ## Updating the site later
 

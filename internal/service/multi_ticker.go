@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"log"
+	"sync/atomic"
 	"time"
 
 	"github.com/zerodha/gokiteconnect/v4/models"
@@ -32,6 +33,18 @@ type MultiTicker struct {
 	apiKey      string
 	accessToken string
 	discord     discordAlerter
+
+	// connected counts WebSockets currently connected, for the engine heartbeat.
+	connected atomic.Int32
+
+	// errors limits Discord to one alert per connection per outage.
+	errors alertGate
+}
+
+// Connected reports how many of the WebSockets are currently connected.
+func (mt *MultiTicker) Connected() int {
+	// A close can arrive without a matching connect (a failed first attempt).
+	return max(0, int(mt.connected.Load()))
 }
 
 // discordAlerter is a minimal interface satisfied by the Discord client, allowing
@@ -105,6 +118,8 @@ func (mt *MultiTicker) buildTicker(idx int) *kiteticker.Ticker {
 	ticker := kiteticker.New(mt.apiKey, mt.accessToken)
 
 	ticker.OnConnect(func() {
+		mt.connected.Add(1)
+		mt.errors.reset(idx)
 		log.Printf("[multi_ticker] WS[%d] connected — subscribing to %d tokens", idx, len(partition))
 
 		tokens := make([]uint32, len(partition))
@@ -133,6 +148,9 @@ func (mt *MultiTicker) buildTicker(idx int) *kiteticker.Ticker {
 
 	ticker.OnError(func(err error) {
 		log.Printf("[multi_ticker] WS[%d] error: %v", idx, err)
+		if !mt.errors.shouldAlert(idx) {
+			return // already alerted for this outage; the log keeps every error
+		}
 		_ = mt.discord.SendAlert(
 			fmt.Sprintf("WS[%d] Error", idx),
 			err.Error(),
@@ -141,6 +159,7 @@ func (mt *MultiTicker) buildTicker(idx int) *kiteticker.Ticker {
 	})
 
 	ticker.OnClose(func(code int, reason string) {
+		mt.connected.Add(-1)
 		log.Printf("[multi_ticker] WS[%d] closed: code=%d reason=%s", idx, code, reason)
 	})
 

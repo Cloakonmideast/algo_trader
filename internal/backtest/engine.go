@@ -228,12 +228,12 @@ type Result struct {
 // vocabulary ("SELL", "BEARISH", "DEATH", "SHORT"), and Long otherwise.
 // Strategies in this repo encode the side in OrderSignal.StrategyName, e.g.
 // "IchimokuKinkoHyo (SELL) Death Cross".
+//
+// The vocabulary lives in domain.DirectionOf so the live engine, the website
+// and the backtester always agree on a signal's side.
 func InferDirection(signalName string) Direction {
-	u := strings.ToUpper(signalName)
-	for _, marker := range []string{"SELL", "BEARISH", "DEATH", "SHORT"} {
-		if strings.Contains(u, marker) {
-			return Short
-		}
+	if domain.DirectionOf(signalName) == domain.Short {
+		return Short
 	}
 	return Long
 }
