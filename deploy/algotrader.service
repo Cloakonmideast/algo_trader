@@ -3,13 +3,16 @@ Description=AlgoTrader engine
 After=network-online.target
 Wants=network-online.target
 
+# Install with your server user name substituted for __USER__:
+#   sed "s/__USER__/$USER/g" ~/algotrader/deploy/algotrader.service | sudo tee /etc/systemd/system/algotrader.service
+
 [Service]
-User=ubuntu
-WorkingDirectory=/home/ubuntu/algotrader
+User=__USER__
+WorkingDirectory=/home/__USER__/algotrader
 # systemd reads KEY=value lines. Lines starting with # are comments, but a
 # "# ..." after a value becomes part of the value, so keep comments on their own lines.
-EnvironmentFile=/home/ubuntu/algotrader/.env
-ExecStart=/home/ubuntu/algotrader/algotrader
+EnvironmentFile=/home/__USER__/algotrader/.env
+ExecStart=/home/__USER__/algotrader/algotrader
 Restart=always
 RestartSec=10
 
