@@ -88,6 +88,10 @@ func main() {
 		watcher.OnRemind = func() {
 			_ = discordClient.SendAlert("Kite login needed", loginHint(cfg.SiteURL), true)
 		}
+		watcher.OnSourceError = func(err error) {
+			_ = discordClient.SendAlert("Can't read Supabase",
+				fmt.Sprintf("The engine can't reach the website's database, so it can't get the Kite token or save signals. Check SUPABASE_URL and SUPABASE_SERVICE_KEY in the server's .env. Error: %v", err), true)
+		}
 		// The heartbeat starts now so the website shows the engine alive while it waits.
 		go runHeartbeat(ctx, supa, watcher, &feed, &instruments)
 

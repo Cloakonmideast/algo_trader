@@ -133,3 +133,22 @@ func TestStepAppliesTokenChangesAndExpiry(t *testing.T) {
 		t.Errorf("expired=%d valid=%v, want 1 and false", expired, w.Valid())
 	}
 }
+
+func TestSourceErrorsAlertOncePerOutage(t *testing.T) {
+	now := ist(t, "2026-09-24 09:30")
+	src := &scriptedSource{
+		errs:  []error{errors.New("401 invalid api key"), errors.New("401 invalid api key"), nil, errors.New("timeout")},
+		queue: []supabase.KiteSession{session("A", now)},
+	}
+	var alerts []string
+	w := NewSessionWatcher(src, time.Millisecond)
+	w.now = func() time.Time { return now }
+	w.OnSourceError = func(err error) { alerts = append(alerts, err.Error()) }
+
+	for i := 0; i < 4; i++ {
+		w.step(context.Background())
+	}
+	if len(alerts) != 2 || alerts[0] != "401 invalid api key" || alerts[1] != "timeout" {
+		t.Errorf("alerts = %q, want one per outage: [401 invalid api key, timeout]", alerts)
+	}
+}

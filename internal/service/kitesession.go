@@ -66,6 +66,11 @@ type SessionWatcher struct {
 	OnExpired func()             // the token in use expired: stop the live feed
 	OnRemind  func()             // no current token during market hours
 
+	// OnSourceError fires once when Supabase can't be read (wrong key, network),
+	// and again only after it has recovered and failed anew.
+	OnSourceError func(err error)
+	sourceDown    bool
+
 	mu    sync.Mutex
 	state sessionState
 }
@@ -73,7 +78,7 @@ type SessionWatcher struct {
 func NewSessionWatcher(src TokenSource, interval time.Duration) *SessionWatcher {
 	return &SessionWatcher{
 		src: src, interval: interval, now: time.Now,
-		OnToken: func(string) {}, OnExpired: func() {}, OnRemind: func() {},
+		OnToken: func(string) {}, OnExpired: func() {}, OnRemind: func() {}, OnSourceError: func(error) {},
 	}
 }
 
@@ -126,8 +131,18 @@ func (w *SessionWatcher) poll(ctx context.Context, apply bool) (string, bool) {
 	latest, err := w.src.LatestToken(ctx)
 	if err != nil {
 		log.Printf("[session] WARNING: could not read the Kite token from Supabase: %v", err)
+		w.mu.Lock()
+		first := !w.sourceDown
+		w.sourceDown = true
+		w.mu.Unlock()
+		if first {
+			w.OnSourceError(err)
+		}
 		return "", false
 	}
+	w.mu.Lock()
+	w.sourceDown = false
+	w.mu.Unlock()
 	now := w.now()
 
 	w.mu.Lock()
