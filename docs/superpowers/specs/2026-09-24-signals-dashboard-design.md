@@ -190,10 +190,12 @@ server, with the service key (`server-only` module). Times are displayed in IST.
 - Mobile: tables scroll sideways; filters collapse into a panel.
 
 ### API routes
-- `GET /api/signals?from&to&strategy&signal&direction&symbol&page&pageSize&sort`:
-  JSON used by the pages and by export. The server pages through Supabase in
-  1,000-row batches. Export requests are capped at 100k rows, with a clear
-  error above that.
+- `GET /api/signals?from&to&strategy&signal&direction&symbol&page&pageSize&sort&order`:
+  JSON `{rows, total, page, pageSize}`, with `pageSize` up to 1,000. Exports
+  fetch page by page from the browser, because Vercel caps a function response
+  at about 4.5 MB. Exports are capped at 100k rows, with a clear error above
+  that. `all=1` returns every row for a filter up to 5,000 (one day's
+  signals), for the dashboard's 30 s refresh.
 - `GET /api/status`: `{ tokenValidToday, tokenCreatedAt, engineLastSeen, feedConnected }`.
 - `GET /api/kite/login`: redirect to `https://kite.zerodha.com/connect/login?v=3&api_key=…`.
 - `GET /api/kite/callback?request_token&status`:
