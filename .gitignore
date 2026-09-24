@@ -20,8 +20,11 @@ scanner_results*.txt
 # Personal notes
 INTERVIEW_PREP.txt
 
-# Web app
-web/node_modules/
+# Node (web app, plus a Playwright-only package.json at the repo root)
+node_modules/
 web/.next/
 web/.vercel/
 web/next-env.d.ts
+
+# Local agent scratch (progress ledgers)
+.superpowers/

@@ -58,3 +58,14 @@ Binaries need env vars from `.env` loaded into the process first. `scan.ps1` sho
 - Log lines are prefixed with the component tag (`[processor]`, `[main]`, …). `logger.Init` writes stdout plus JSON lines to `logs/algotrader.log`.
 - `config.Load` panics on missing required env vars. `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID` are required even though no code uses them yet. Alerts go only through `DISCORD_WEBHOOK_URL`.
 - `.exe` files in the root are stale build artifacts, not sources of truth.
+
+## Website (`web/`)
+
+Next.js 16 on Vercel, which reads Supabase server-side only. See `web/README.md`.
+
+- `cd web && npm test` (vitest), `npx tsc --noEmit`, `npm run lint`, `npm run build`. A single file: `npx vitest run src/lib/kite.test.ts`.
+- Next 16: gating lives in `src/proxy.ts` (not `middleware.ts`), page `searchParams` is a Promise, and `cookies()` is async. Check `web/node_modules/next/dist/docs/` before using other Next APIs.
+- There is no demo data. Every environment needs `SUPABASE_URL`/`SUPABASE_SERVICE_KEY`, and `src/app/error.tsx` explains what to check when Supabase can't be read.
+- Signal names in `src/lib/catalog.ts` mirror the Go engine's. Update both together, and keep `directionOf` in step with `backtest.InferDirection`.
+- The Kite `access_token` must never reach the browser. `SupabaseStore.status()` deliberately selects only `created_at`.
+- Schema: `supabase/migrations/001_init.sql`. Setup steps: `docs/SETUP.md`.
