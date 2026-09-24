@@ -1,0 +1,27 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Data and caches (the candle DB is ~300 MB and rebuilt with cmd/backfill)
+*.db
+*.db-shm
+*.db-wal
+backtest_symbols.csv
+nifty500_fresh.csv
+
+# Build output and run artefacts
+*.exe
+logs/
+*.log
+backtest_out*/
+scanner_results*.txt
+
+# Personal notes
+INTERVIEW_PREP.txt
+
+# Web app
+web/node_modules/
+web/.next/
+web/.vercel/
+web/next-env.d.ts
