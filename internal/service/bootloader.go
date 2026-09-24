@@ -38,15 +38,35 @@ type Bootloader struct {
 	db  *repository.DB
 	ctx *domain.MarketContext
 	kc  *kiteconnect.Client
+
+	// sessions reads the trading calendar (see gapfill.go), so gap fills and
+	// the rollup never request data for days the market was closed.
+	sessions sessionProbe
 }
 
 // NewBootloader constructs a Bootloader wired to the database, RAM context, and Kite client.
 func NewBootloader(db *repository.DB, ctx *domain.MarketContext, kc *kiteconnect.Client) *Bootloader {
-	return &Bootloader{
+	b := &Bootloader{
 		db:  db,
 		ctx: ctx,
 		kc:  kc,
 	}
+	b.sessions = b.indexSessions
+	return b
+}
+
+// indexSessions is the trading calendar: the days the NIFTY 50 index has a
+// daily candle for in [from, to].
+func (b *Bootloader) indexSessions(from, to time.Time) ([]time.Time, error) {
+	candles, err := b.fetchFromAPI(calendarToken, from, to)
+	if err != nil {
+		return nil, err
+	}
+	days := make([]time.Time, 0, len(candles))
+	for _, c := range candles {
+		days = append(days, c.Date.Time)
+	}
+	return days, nil
 }
 
 // Boot executes the full pre-market bootstrap sequence for the provided instrument tokens.
@@ -65,6 +85,18 @@ func (b *Bootloader) Boot(tokens []uint32) {
 	// Shared rate limiter: burst of bootWorkers, steady-state at zerodhaHistoricalRPS/s.
 	// Only API calls (slow path) consume a token; SQLite loads bypass the limiter.
 	limiter := rate.NewLimiter(rate.Limit(zerodhaHistoricalRPS), bootWorkers)
+
+	// One calendar request decides what "up to date" means for every token:
+	// the last day the market actually traded and closed.
+	lastSession, calErr := lastTradingSession(time.Now(), b.sessions)
+	gapFill := calErr == nil
+	if gapFill {
+		log.Printf("[bootloader] Last completed trading session: %s", domain.TradeDate(lastSession))
+	} else {
+		// Almost always "no valid Kite login yet": every gap request would fail
+		// too. The load after the next login fills the gaps instead.
+		log.Printf("[bootloader] Can't read the trading calendar (%v) — skipping gap fill this time", calErr)
+	}
 
 	// Feed all tokens into a buffered work channel.
 	work := make(chan uint32, total)
@@ -85,7 +117,7 @@ func (b *Bootloader) Boot(tokens []uint32) {
 		go func(workerID int) {
 			defer wg.Done()
 			for token := range work {
-				b.processToken(workerID, token, limiter)
+				b.processToken(workerID, token, limiter, lastSession, gapFill)
 
 				mu.Lock()
 				completed++
@@ -103,7 +135,7 @@ func (b *Bootloader) Boot(tokens []uint32) {
 }
 
 // processToken handles a single token: SQLite fast-path, no-data skip-list, or API slow-path.
-func (b *Bootloader) processToken(workerID int, token uint32, limiter *rate.Limiter) {
+func (b *Bootloader) processToken(workerID int, token uint32, limiter *rate.Limiter, lastSession time.Time, gapFill bool) {
 	// Fast path 1: data already exists in SQLite — load into RAM, no API call.
 	count, err := b.db.CountHistory(token)
 	if err != nil {
@@ -118,24 +150,26 @@ func (b *Bootloader) processToken(workerID int, token uint32, limiter *rate.Limi
 			return
 		}
 
-		// Incremental backfill: if the latest stored candle is more than one day
-		// old, fetch the missing days from the API and persist them before loading
-		// into the RAM cache. This keeps the DB current on every engine boot.
-		if len(candles) > 0 {
+		// Gap fill: if days are missing since the latest stored candle (e.g. a
+		// day with no Kite login, so the 15:45 rollup couldn't run), fetch them
+		// now and persist them before loading into RAM. Boot runs at startup, at
+		// 08:45 and after every login on the website, so gaps close at the next
+		// login. Only up to the last trading session: never today's partial
+		// candle, and no request at all when only weekends or holidays passed.
+		if gapFill && len(candles) > 0 {
 			latest := candles[len(candles)-1].Date.Time
-			yesterday := time.Now().AddDate(0, 0, -1)
-			if latest.Before(yesterday) {
+			if fromDate, toDate, need := gapWindow(latest, lastSession); need {
 				if err := limiter.Wait(context.Background()); err == nil {
-					fromDate := latest.Add(24 * time.Hour)
-					toDate := time.Now()
 					fresh, fetchErr := b.fetchFromAPI(token, fromDate, toDate)
 					if fetchErr != nil {
-						log.Printf("[bootloader] worker=%d WARN backfill fetch failed for token %d: %v — using stale data", workerID, token, fetchErr)
+						log.Printf("[bootloader] worker=%d WARN gap fill failed for token %d: %v — using stored data", workerID, token, fetchErr)
 					} else if len(fresh) > 0 {
 						if saveErr := b.db.SaveCandles(token, fresh); saveErr != nil {
-							log.Printf("[bootloader] worker=%d WARN backfill save failed for token %d: %v", workerID, token, saveErr)
+							log.Printf("[bootloader] worker=%d WARN gap fill save failed for token %d: %v", workerID, token, saveErr)
 						}
 						candles = append(candles, fresh...)
+						log.Printf("[bootloader] worker=%d filled %d missing day(s) for token %d (%s → %s)", workerID, len(fresh), token,
+							domain.TradeDate(fresh[0].Date.Time), domain.TradeDate(fresh[len(fresh)-1].Date.Time))
 					}
 				}
 			}
@@ -160,7 +194,8 @@ func (b *Bootloader) processToken(workerID int, token uint32, limiter *rate.Limi
 		return
 	}
 
-	toDate := time.Now()
+	// Full history for a new token, up to the last trading session only.
+	toDate := dayEnd(lastSession)
 	fromDate := toDate.AddDate(-3, 0, 0)
 
 	candles, err := b.fetchFromAPI(token, fromDate, toDate)
@@ -188,6 +223,10 @@ func (b *Bootloader) processToken(workerID int, token uint32, limiter *rate.Limi
 //
 // This is called by the scheduler at 15:45 on weekdays, after market close.
 func (b *Bootloader) EoDRollup(tokens []uint32) {
+	if !isTradingDay(time.Now(), b.sessions) {
+		log.Println("[bootloader] Market was closed today (holiday) — skipping EoD rollup")
+		return
+	}
 	log.Printf("[bootloader] Starting EoD rollup for %d tokens", len(tokens))
 
 	limiter := rate.NewLimiter(rate.Limit(zerodhaHistoricalRPS), bootWorkers)

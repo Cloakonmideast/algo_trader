@@ -52,11 +52,18 @@ func (mc *MarketContext) Set(token uint32, candles []kiteconnect.HistoricalData)
 
 // Append adds a single new candle to the end of an instrument's historical slice.
 // It is used by the end-of-day rollup routine to extend the cache with today's
-// freshly closed candle without requiring a full cache reload.
+// freshly closed candle without requiring a full cache reload. A candle for the
+// same IST day as the current last one replaces it instead, so a day is never
+// held twice (e.g. an intraday snapshot followed by the final candle).
 func (mc *MarketContext) Append(token uint32, candle kiteconnect.HistoricalData) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
-	mc.data[token] = append(mc.data[token], candle)
+	cur := mc.data[token]
+	if n := len(cur); n > 0 && TradeDate(cur[n-1].Date.Time) == TradeDate(candle.Date.Time) {
+		cur[n-1] = candle
+		return
+	}
+	mc.data[token] = append(cur, candle)
 }
 
 // Get returns a deep copy of the historical candle slice for a given instrument token.
