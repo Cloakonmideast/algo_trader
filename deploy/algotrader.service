@@ -1,0 +1,17 @@
+[Unit]
+Description=AlgoTrader engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/algotrader
+# systemd reads KEY=value lines. Lines starting with # are comments, but a
+# "# ..." after a value becomes part of the value, so keep comments on their own lines.
+EnvironmentFile=/home/ubuntu/algotrader/.env
+ExecStart=/home/ubuntu/algotrader/algotrader
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

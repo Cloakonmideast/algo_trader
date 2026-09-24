@@ -11,10 +11,10 @@ What you end up with:
   passcode. It redeploys automatically on every push.
 - A **Log in to Kite** button that saves each day's access token.
 
-> The trading engine is not hosted yet. It gets its own section (Oracle Cloud)
-> with the engine update. Until then the site works, and you can log in to
-> Kite and test it with a sample signal (step 6), but no real signals arrive
-> and the header shows "Engine never seen".
+> The trading engine runs separately, on an Oracle Cloud server (step 7). Until
+> the engine update that connects it to Supabase, the engine keeps sending
+> Discord alerts only. The site works (Kite login, test signal in step 6), but
+> real signals don't reach it yet, and the header shows "Engine never seen".
 
 ---
 
@@ -256,11 +256,186 @@ the button on the site handles the token.
 
 ---
 
+## 7. Host the engine on Oracle Cloud (Always Free)
+
+The Go engine (`cmd/engine`) has to run all day: it holds a live connection
+to Zerodha, runs the strategies on every tick, and runs the 08:45 and 15:45
+jobs. Vercel can't do that, so it gets a small free Linux server. It only
+makes outgoing connections, so you don't need to open any ports.
+
+### 7.1 Create the Oracle account
+
+1. https://www.oracle.com/cloud/free/ → **Start for free**.
+2. **Home Region**: pick **India West (Mumbai)** or **India South
+   (Hyderabad)**. ⚠️ This can't be changed later, and Always Free servers only
+   exist in your home region.
+3. A card is needed for identity verification. The Always Free resources used
+   here are not charged.
+
+### 7.2 Create the server
+
+1. Console → ☰ menu → **Compute → Instances → Create instance**.
+2. **Name**: `algotrader`.
+3. **Image and shape → Edit**:
+   - **Change image** → **Canonical Ubuntu** → **24.04** → Select.
+   - **Change shape** → **Ampere** → **VM.Standard.A1.Flex** → **2 OCPUs,
+     12 GB memory** (within the free allowance of 4 OCPUs / 24 GB).
+4. **Networking**: keep the defaults (new virtual cloud network, public
+   subnet), with **Assign a public IPv4 address** ticked.
+5. **Add SSH keys** → **Generate a key pair for me** → **Save private key**.
+   You get a file like `ssh-key-2026-09-24.key`; keep it safe, it's your
+   only way in.
+6. **Create**. After 1–2 minutes the state turns **Running**. Copy the
+   **Public IP address** from the instance page.
+
+If you get **"Out of capacity for shape VM.Standard.A1.Flex"**, the free ARM
+servers in that region are temporarily full. Try a different **Availability
+domain** in the same form, or try again a few hours later (early morning IST
+works best).
+
+### 7.3 Connect from this PC
+
+In PowerShell (replace the file name and IP):
+
+```powershell
+mkdir $HOME\.ssh -Force
+Move-Item $HOME\Downloads\ssh-key-2026-09-24.key $HOME\.ssh\oracle-algotrader.key
+icacls $HOME\.ssh\oracle-algotrader.key /inheritance:r /grant:r "$($env:USERNAME):(R)"
+ssh -i $HOME\.ssh\oracle-algotrader.key ubuntu@<PUBLIC_IP>
+```
+
+Type `yes` the first time. The prompt changes to `ubuntu@algotrader:~$`: you
+are now on the server. The steps up to 7.8 run there unless marked "on this
+PC".
+
+### 7.4 Prepare the server
+
+```bash
+sudo timedatectl set-timezone Asia/Kolkata
+sudo apt update && sudo apt -y upgrade
+sudo apt -y install build-essential git sqlite3
+
+curl -LO https://go.dev/dl/go1.25.5.linux-arm64.tar.gz
+sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.25.5.linux-arm64.tar.gz
+rm go1.25.5.linux-arm64.tar.gz
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc && source ~/.bashrc
+go version     # go version go1.25.5 linux/arm64
+date           # must show IST
+```
+
+The timezone matters: the engine's 08:45 and 15:45 jobs use the server
+clock.
+
+### 7.5 Get the code (read-only access to your private repo)
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/github_deploy -N ""
+cat ~/.ssh/github_deploy.pub
+```
+
+Copy the line it prints. On GitHub: your repo → **Settings → Deploy keys →
+Add deploy key**. Title `oracle`, paste the key, leave **Allow write access
+unticked** → **Add key**. Then on the server:
+
+```bash
+printf 'Host github.com\n  IdentityFile ~/.ssh/github_deploy\n' >> ~/.ssh/config
+git clone git@github.com:<your-username>/algotrader.git ~/algotrader
+cd ~/algotrader
+go test ./internal/...
+go build -o algotrader ./cmd/engine
+```
+
+Type `yes` when asked about github.com's fingerprint. The tests should print
+`ok`, and the build should produce `~/algotrader/algotrader`.
+
+### 7.6 Copy the candle database up (one time)
+
+**On this PC**, first stop the engine if it's running here (so the file isn't
+mid-write), then in a **new** PowerShell window:
+
+```powershell
+scp -i $HOME\.ssh\oracle-algotrader.key C:\vsc\algotrader\market_data.db ubuntu@<PUBLIC_IP>:/home/ubuntu/algotrader/
+```
+
+That's about 300 MB, so it takes a few minutes. Back on the server,
+`ls -lh ~/algotrader/market_data.db` should show about 290M.
+
+### 7.7 Create the engine's `.env` on the server
+
+```bash
+nano ~/algotrader/.env
+```
+
+Paste the contents of your PC's `C:\vsc\algotrader\.env`, then fix two things:
+
+- **Remove inline comments.** The service reads `KEY=value # note` as the
+  value `value # note`. Your `KITE_ACCESS_TOKEN=... # Generated daily...`
+  line must become just `KITE_ACCESS_TOKEN=...`. Comments on their own lines
+  are fine.
+- `DATABASE_PATH=market_data.db` (the file you just copied).
+
+Save with `Ctrl+O`, `Enter`, `Ctrl+X`. Then lock the file down:
+
+```bash
+chmod 600 ~/algotrader/.env
+```
+
+### 7.8 Run it as a service
+
+```bash
+sudo cp ~/algotrader/deploy/algotrader.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now algotrader
+journalctl -u algotrader -f      # live log; Ctrl+C to stop watching (the engine keeps running)
+```
+
+You should see the startup banner, "Boot complete", and a Discord
+"AlgoTrader Online" message. The service starts on boot and restarts itself
+if it crashes.
+
+Useful commands:
+
+| Command | What it does |
+|---|---|
+| `systemctl status algotrader` | Is it running? |
+| `journalctl -u algotrader -f` | Live log |
+| `journalctl -u algotrader --since today` | Today's log |
+| `sudo systemctl restart algotrader` | Restart |
+| `~/algotrader/deploy/update.sh` | After a `git push`: pull, test, rebuild, restart |
+
+### 7.9 The daily Kite token (until the engine update)
+
+The engine still reads `KITE_ACCESS_TOKEN` from `.env`. Each trading morning,
+after generating a token the old way (the PowerShell snippet in `readme`):
+
+```powershell
+ssh -i $HOME\.ssh\oracle-algotrader.key ubuntu@<PUBLIC_IP> "~/algotrader/deploy/set-token.sh <NEW_ACCESS_TOKEN>"
+```
+
+This writes the token into the server's `.env` and restarts the engine, which
+then loads data and connects. After the engine update this step goes away:
+the engine will take the token from **Log in to Kite** on the website.
+
+### 7.10 Keep the server from being reclaimed
+
+Oracle may reclaim an Always Free server that stays almost completely idle
+for 7 days (very low CPU, network and memory use). The engine is light, so
+this can happen. To avoid it, upgrade the account to **Pay As You Go**
+(Billing → Upgrade). Always Free resources stay free, and Oracle doesn't
+reclaim idle servers on paid accounts. Check Oracle's current Always Free
+terms when you do this.
+
+If it ever does get reclaimed, your signal history is safe in Supabase. You
+redo 7.2–7.8 and copy up the database again (or rebuild it with
+`go run ./cmd/backfill -years 10`, which takes hours).
+
+---
+
 ## Daily routine
 
 Each trading morning: open the site on any device → **Log in to Kite** →
-Zerodha password + TOTP. One login covers every device and, once it's
-deployed, the engine.
+Zerodha password + TOTP. One login covers every device. Until the engine
+update, also push that day's token to the server (step 7.9).
 
 ## Updating the site later
 
