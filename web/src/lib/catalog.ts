@@ -19,10 +19,12 @@ export const STRATEGIES: Record<string, readonly string[]> = {
     "RSI (Bearish GFS)",
   ],
   IchimokuKinkoHyo: [
+    "IchimokuKinkoHyo (Future BUY)",
     "IchimokuKinkoHyo (BUY)",
     "IchimokuKinkoHyo (BUY) 1A",
     "IchimokuKinkoHyo (BUY) Gold Cross",
     "IchimokuKinkoHyo (BUY) Gold Cross A",
+    "IchimokuKinkoHyo (Future SELL)",
     "IchimokuKinkoHyo (SELL)",
     "IchimokuKinkoHyo (SELL) 1A",
     "IchimokuKinkoHyo (SELL) Death Cross",

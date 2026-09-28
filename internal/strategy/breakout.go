@@ -77,6 +77,11 @@ func (i *IchimokuKinkoHyo) Evaluate(tick models.Tick, ctx *domain.MarketContext)
 	var currentPrice float64
 	var yesterdayClose float64
 
+	// history is every completed session before "today", and today is its date;
+	// the monthly and weekly checks of the Future signals need both.
+	var history []kiteconnect.HistoricalData
+	var today time.Time
+
 	if marketOpen {
 		// Market is running: use live tick price and live intraday H/L seed.
 		// candles[len-1] = yesterday's completed daily candle → correct "yesterday".
@@ -93,6 +98,8 @@ func (i *IchimokuKinkoHyo) Evaluate(tick models.Tick, ctx *domain.MarketContext)
 		conversionCandles = candles[len(candles)-8:]
 		baseCandles = candles[len(candles)-25:]
 		cnt = 25
+		history = candles
+		today = now
 	} else {
 		// Market is closed: treat candles[len-1] as "today" (the most recent
 		// session) so all Ichimoku period counts stay correct.
@@ -107,6 +114,8 @@ func (i *IchimokuKinkoHyo) Evaluate(tick models.Tick, ctx *domain.MarketContext)
 		conversionCandles = candles[len(candles)-9:]
 		baseCandles = candles[len(candles)-26:]
 		cnt = 26
+		history = candles[:len(candles)-1]
+		today = last.Date.Time
 	}
 
 	// ── 2. Conversion Line (Tenkan-sen) — 9-period midpoint ──────────────────
@@ -235,7 +244,20 @@ func (i *IchimokuKinkoHyo) Evaluate(tick models.Tick, ctx *domain.MarketContext)
 	lag_death_cross := yesterdayClose >= pastPrevConversionLine && currentPrice < pastConversionLine
 
 	// ── 9. Full Ichimoku buy signal ───────────────────────────────────────────
-	if curr_above_cloud && lag_above_cdlhigh && cl_above_bl && curr_above_cl && lag_above_prev_ctop && condition6 {
+	// Future BUY is the full buy plus a fresh break above last month's high and
+	// price above the weekly Conversion Line. It is sent instead of the plain buy.
+	buy := curr_above_cloud && lag_above_cdlhigh && cl_above_bl && curr_above_cl && lag_above_prev_ctop && condition6
+	if buy && monthlyBreakUp(history, today, todayOpen, currentPrice) {
+		if weeklyCL, ok := weeklyConversionLine(history, today, todayHigh, todayLow); ok && currentPrice > weeklyCL {
+			return true, domain.OrderSignal{
+				InstrumentToken: tick.InstrumentToken,
+				TradingSymbol:   "",
+				StrategyName:    i.Name() + " (Future BUY)",
+				SignalTime:      time.Now().UTC(),
+			}
+		}
+	}
+	if buy {
 		return true, domain.OrderSignal{
 			InstrumentToken: tick.InstrumentToken,
 			TradingSymbol:   "",
@@ -272,7 +294,20 @@ func (i *IchimokuKinkoHyo) Evaluate(tick models.Tick, ctx *domain.MarketContext)
 		}
 	}
 
-	if condition7 && bl_above_cl && cl_above_curr && lag_below_prev_cld_btm && lag_below_cdl && curr_below_cld_btm {
+	// Future SELL mirrors Future BUY: the full sell plus a fresh break below last
+	// month's low and price below the weekly Conversion Line.
+	sell := condition7 && bl_above_cl && cl_above_curr && lag_below_prev_cld_btm && lag_below_cdl && curr_below_cld_btm
+	if sell && monthlyBreakDown(history, today, todayOpen, currentPrice) {
+		if weeklyCL, ok := weeklyConversionLine(history, today, todayHigh, todayLow); ok && currentPrice < weeklyCL {
+			return true, domain.OrderSignal{
+				InstrumentToken: tick.InstrumentToken,
+				TradingSymbol:   "",
+				StrategyName:    i.Name() + " (Future SELL)",
+				SignalTime:      time.Now().UTC(),
+			}
+		}
+	}
+	if sell {
 		return true, domain.OrderSignal{
 			InstrumentToken: tick.InstrumentToken,
 			TradingSymbol:   "",
@@ -310,4 +345,103 @@ func (i *IchimokuKinkoHyo) Evaluate(tick models.Tick, ctx *domain.MarketContext)
 	}
 
 	return false, domain.OrderSignal{}
+}
+
+// monthLevels holds the previous calendar month's range and the range of the
+// current month's sessions before today.
+type monthLevels struct {
+	prevHigh, prevLow   float64
+	prevOK              bool // the previous month has candles
+	soFarHigh, soFarLow float64
+	soFarOK             bool // false on the month's first session
+}
+
+// monthLevelsBefore reads monthLevels from before, the sessions before today,
+// oldest first. Months are IST calendar months.
+func monthLevelsBefore(before []kiteconnect.HistoricalData, today time.Time) monthLevels {
+	t := today.In(domain.IST)
+	thisMonth := time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, domain.IST)
+	prevMonth := thisMonth.AddDate(0, -1, 0)
+
+	var lv monthLevels
+	for i := len(before) - 1; i >= 0; i-- {
+		c := before[i]
+		d := c.Date.Time.In(domain.IST)
+		switch {
+		case !d.Before(thisMonth):
+			if !lv.soFarOK || c.High > lv.soFarHigh {
+				lv.soFarHigh = c.High
+			}
+			if !lv.soFarOK || c.Low < lv.soFarLow {
+				lv.soFarLow = c.Low
+			}
+			lv.soFarOK = true
+		case !d.Before(prevMonth):
+			if !lv.prevOK || c.High > lv.prevHigh {
+				lv.prevHigh = c.High
+			}
+			if !lv.prevOK || c.Low < lv.prevLow {
+				lv.prevLow = c.Low
+			}
+			lv.prevOK = true
+		default:
+			return lv
+		}
+	}
+	return lv
+}
+
+// monthlyBreakUp reports whether today is the month's first break above the
+// previous month's high: either the price crossed it during today's session
+// (open at or below, now above) or today gapped over it (yesterday's close at
+// or below, today's open above). No earlier session this month may have gone
+// above it already.
+func monthlyBreakUp(before []kiteconnect.HistoricalData, today time.Time, todayOpen, price float64) bool {
+	lv := monthLevelsBefore(before, today)
+	if !lv.prevOK || (lv.soFarOK && lv.soFarHigh > lv.prevHigh) {
+		return false
+	}
+	level := lv.prevHigh
+	yesterdayClose := before[len(before)-1].Close
+	return (todayOpen <= level && price > level) || (yesterdayClose <= level && todayOpen > level)
+}
+
+// monthlyBreakDown mirrors monthlyBreakUp for the previous month's low.
+func monthlyBreakDown(before []kiteconnect.HistoricalData, today time.Time, todayOpen, price float64) bool {
+	lv := monthLevelsBefore(before, today)
+	if !lv.prevOK || (lv.soFarOK && lv.soFarLow < lv.prevLow) {
+		return false
+	}
+	level := lv.prevLow
+	yesterdayClose := before[len(before)-1].Close
+	return (todayOpen >= level && price < level) || (yesterdayClose >= level && todayOpen < level)
+}
+
+// weeklyConversionLine is the Conversion Line on the weekly chart: the midpoint
+// of the highest high and lowest low over the last 9 weeks (IST ISO weeks),
+// counting the current week, which includes today's high and low. ok is false
+// when before holds fewer than 9 weeks.
+func weeklyConversionLine(before []kiteconnect.HistoricalData, today time.Time, todayHigh, todayLow float64) (float64, bool) {
+	const weeksNeeded = 9
+	year, week := today.In(domain.IST).ISOWeek()
+	high, low := todayHigh, todayLow
+	weeks := 1
+	for i := len(before) - 1; i >= 0; i-- {
+		c := before[i]
+		y, w := c.Date.Time.In(domain.IST).ISOWeek()
+		if y != year || w != week {
+			if weeks == weeksNeeded {
+				break
+			}
+			weeks++
+			year, week = y, w
+		}
+		if c.High > high {
+			high = c.High
+		}
+		if c.Low < low {
+			low = c.Low
+		}
+	}
+	return (high + low) / 2.0, weeks == weeksNeeded
 }

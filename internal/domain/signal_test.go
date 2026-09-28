@@ -14,6 +14,8 @@ func TestDirectionOf(t *testing.T) {
 		"IchimokuKinkoHyo (SELL) 1A":          Short,
 		"IchimokuKinkoHyo (SELL) Death Cross": Short,
 		"IchimokuKinkoHyo (BUY) Gold Cross":   Long,
+		"IchimokuKinkoHyo (Future BUY)":       Long,
+		"IchimokuKinkoHyo (Future SELL)":      Short,
 		"something short-dated":               Short,
 	}
 	for name, want := range cases {
