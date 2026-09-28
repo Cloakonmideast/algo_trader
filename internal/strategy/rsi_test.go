@@ -5,7 +5,42 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"algotrader/internal/domain"
 )
+
+// Weekly and monthly RSI must bucket sessions by the IST calendar even when a
+// candle's time is in UTC, as candles read back from SQLite are: an IST-midnight
+// session is 18:30 UTC the day before. Otherwise every Monday joins the previous
+// week and every 1st joins the previous month.
+func TestResampleClosesUsesISTCalendar(t *testing.T) {
+	utc := func(y int, m time.Month, d int) time.Time { return time.Date(y, m, d, 0, 0, 0, 0, domain.IST).UTC() }
+	series := []dailyClose{
+		{Date: utc(2026, time.September, 18), Close: 10}, // Fri, ISO week 38
+		{Date: utc(2026, time.September, 21), Close: 20}, // Mon, week 39
+		{Date: utc(2026, time.September, 30), Close: 30}, // Wed, week 40, September
+		{Date: utc(2026, time.October, 1), Close: 40},    // Thu, week 40, October
+	}
+
+	if got, want := resampleCloses(series, weekBucket), []float64{10, 20, 40}; !equalCloses(got, want) {
+		t.Errorf("weekly closes = %v, want %v", got, want)
+	}
+	if got, want := resampleCloses(series, monthBucket), []float64{30, 40}; !equalCloses(got, want) {
+		t.Errorf("monthly closes = %v, want %v", got, want)
+	}
+}
+
+func equalCloses(a, b []float64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
 
 // day builds a dailyClose for a calendar date, keeping the tests readable.
 func day(y int, m time.Month, d int, close float64) dailyClose {

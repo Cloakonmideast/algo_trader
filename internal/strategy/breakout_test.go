@@ -139,10 +139,11 @@ func evaluate(t *testing.T, candles []kiteconnect.HistoricalData) (bool, string)
 	return ok, sig.StrategyName
 }
 
-// ichimokuSeries is 130 flat sessions at 100 ending on Friday 2026-06-12, with
-// the last session left for the test to shape.
+// ichimokuSeries is 330 flat sessions at 100 ending on Friday 2026-06-12, with
+// the last session left for the test to shape. That is 15 calendar months, just
+// enough for a monthly RSI(14).
 func ichimokuSeries() []kiteconnect.HistoricalData {
-	return flat(weekdays(istDay(2026, time.June, 12), 130), 100)
+	return flat(weekdays(istDay(2026, time.June, 12), 330), 100)
 }
 
 func TestIchimokuFutureBuy(t *testing.T) {
@@ -155,6 +156,23 @@ func TestIchimokuFutureBuy(t *testing.T) {
 
 	if ok, name := evaluate(t, candles); !ok || name != "IchimokuKinkoHyo (Future BUY)" {
 		t.Fatalf("got %v %q, want IchimokuKinkoHyo (Future BUY)", ok, name)
+	}
+
+	// The signal carries the stock's RSI, the same readings the RSI strategy
+	// computes: flat at 100 then a jump to 120 is all gain, so every timeframe
+	// reads 100.
+	ctx := domain.NewMarketContext()
+	ctx.Set(1, candles)
+	_, sig := NewIchimokuKinkoHyo().Evaluate(models.Tick{InstrumentToken: 1}, ctx)
+	want, _, ok := NewRSI(14).readingsAt(models.Tick{InstrumentToken: 1}, ctx)
+	if !ok {
+		t.Fatal("readingsAt: not enough history")
+	}
+	if sig.RSI == nil || *sig.RSI != *readingsOf(want) {
+		t.Fatalf("RSI = %+v, want %+v", sig.RSI, readingsOf(want))
+	}
+	if r := *sig.RSI; r.Daily != 100 || r.Weekly != 100 || r.Monthly != 100 || !r.WeeklyOK || !r.MonthlyOK {
+		t.Errorf("RSI = %+v, want 100 on every timeframe, all known", r)
 	}
 
 	// June already went above May's high two sessions ago, so the monthly break

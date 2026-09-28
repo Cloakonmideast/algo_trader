@@ -363,12 +363,16 @@ func resampleCloses(series []dailyClose, bucketOf func(time.Time) (int, int)) []
 	return append(closes, last) // the in-progress bucket
 }
 
-// weekBucket keys a date by ISO year and ISO week, so weeks spanning a year
-// boundary stay a single bucket.
-func weekBucket(t time.Time) (int, int) { return t.ISOWeek() }
+// weekBucket keys a date by ISO year and ISO week on the IST calendar, so weeks
+// spanning a year boundary stay a single bucket and a session stored in UTC
+// (IST midnight is 18:30 UTC the day before) lands in its own week.
+func weekBucket(t time.Time) (int, int) { return t.In(domain.IST).ISOWeek() }
 
-// monthBucket keys a date by calendar year and month.
-func monthBucket(t time.Time) (int, int) { return t.Year(), int(t.Month()) }
+// monthBucket keys a date by IST calendar year and month.
+func monthBucket(t time.Time) (int, int) {
+	t = t.In(domain.IST)
+	return t.Year(), int(t.Month())
+}
 
 // Evaluate returns the highest-priority signal, for callers that take only one.
 func (r *RSI) Evaluate(tick models.Tick, ctx *domain.MarketContext) (bool, domain.OrderSignal) {
@@ -381,81 +385,9 @@ func (r *RSI) Evaluate(tick models.Tick, ctx *domain.MarketContext) (bool, domai
 
 // EvaluateAll returns every signal that fires on this tick, highest priority first.
 func (r *RSI) EvaluateAll(tick models.Tick, ctx *domain.MarketContext) []domain.OrderSignal {
-	rawCandles, ok := ctx.Get(tick.InstrumentToken)
-	if !ok || len(rawCandles) < r.Period {
+	x, currentPrice, ok := r.readingsAt(tick, ctx)
+	if !ok {
 		return nil
-	}
-
-	// Copy the slice so we don't modify the shared array backing
-	candles := make([]kiteconnect.HistoricalData, len(rawCandles))
-	copy(candles, rawCandles)
-
-	// Strip today's incomplete candle if the REST API returned it (intraday boot).
-	loc, _ := time.LoadLocation("Asia/Kolkata")
-	if loc == nil {
-		loc = time.FixedZone("IST", 5*3600+30*60)
-	}
-	now := time.Now().In(loc)
-	lastDate := candles[len(candles)-1].Date.In(loc)
-	if lastDate.Year() == now.Year() && lastDate.Month() == now.Month() && lastDate.Day() == now.Day() {
-		candles = candles[:len(candles)-1]
-	}
-
-	_, marketOpen := ctx.Intraday.Get(tick.InstrumentToken)
-	var currentPrice float64
-	var currentDate time.Time
-
-	if marketOpen {
-		currentPrice = tick.LastPrice
-		currentDate = now
-	} else {
-		// Market is closed: use last candle close
-		if len(candles) == 0 {
-			return nil
-		}
-		last := candles[len(candles)-1]
-		currentPrice = last.Close
-		currentDate = last.Date.Time
-		// We remove the last candle since we're using its close as the "current price"
-		candles = candles[:len(candles)-1]
-	}
-
-	if len(candles) < r.Period {
-		return nil
-	}
-
-	// series is the daily close series INCLUDING the bar being evaluated, with
-	// currentPrice as its close. Every timeframe is computed from it.
-	series := make([]dailyClose, 0, len(candles)+1)
-	closes := make([]float64, 0, len(candles)+1)
-	for _, c := range candles {
-		series = append(series, dailyClose{Date: c.Date.Time, Close: c.Close})
-		closes = append(closes, c.Close)
-	}
-	series = append(series, dailyClose{Date: currentDate, Close: currentPrice})
-	closes = append(closes, currentPrice)
-
-	daily := rsiSeries(closes, r.Period)
-	if len(daily) < 2 {
-		return nil
-	}
-
-	// The weekly RSI as it stood yesterday comes from the series without today's
-	// bar, so a weekly signal fires on the day the weekly RSI makes its move.
-	weeklyToday := rsiSeries(resampleCloses(series, weekBucket), r.WeeklyPeriod)
-	weeklyPrev := rsiSeries(resampleCloses(series[:len(series)-1], weekBucket), r.WeeklyPeriod)
-	monthly := rsiSeries(resampleCloses(series, monthBucket), r.MonthlyPeriod)
-
-	x := rsiReadings{
-		DailyHist:  daily[:len(daily)-1],
-		Daily:      daily[len(daily)-1],
-		WeeklyHist: weeklyPrev,
-	}
-	if len(weeklyToday) > 0 {
-		x.Weekly, x.WeeklyOK = weeklyToday[len(weeklyToday)-1], true
-	}
-	if len(monthly) > 0 {
-		x.Monthly, x.MonthlyOK = monthly[len(monthly)-1], true
 	}
 
 	names := r.signalNames(x)
@@ -476,6 +408,98 @@ func (r *RSI) EvaluateAll(tick models.Tick, ctx *domain.MarketContext) []domain.
 		})
 	}
 	return signals
+}
+
+// Readings returns the stock's daily, weekly and monthly RSI as they stand at
+// this tick, or nil without enough history. Other strategies attach it to their
+// signals so the website shows RSI for every signal.
+func (r *RSI) Readings(tick models.Tick, ctx *domain.MarketContext) *domain.RSIReadings {
+	x, _, ok := r.readingsAt(tick, ctx)
+	if !ok {
+		return nil
+	}
+	return readingsOf(x)
+}
+
+// readingsAt computes every RSI reading the signal rules read, plus the price
+// being evaluated. ok is false when there isn't enough daily history.
+func (r *RSI) readingsAt(tick models.Tick, ctx *domain.MarketContext) (x rsiReadings, currentPrice float64, ok bool) {
+	rawCandles, found := ctx.Get(tick.InstrumentToken)
+	if !found || len(rawCandles) < r.Period {
+		return rsiReadings{}, 0, false
+	}
+
+	// Copy the slice so we don't modify the shared array backing
+	candles := make([]kiteconnect.HistoricalData, len(rawCandles))
+	copy(candles, rawCandles)
+
+	// Strip today's incomplete candle if the REST API returned it (intraday boot).
+	loc, _ := time.LoadLocation("Asia/Kolkata")
+	if loc == nil {
+		loc = time.FixedZone("IST", 5*3600+30*60)
+	}
+	now := time.Now().In(loc)
+	lastDate := candles[len(candles)-1].Date.In(loc)
+	if lastDate.Year() == now.Year() && lastDate.Month() == now.Month() && lastDate.Day() == now.Day() {
+		candles = candles[:len(candles)-1]
+	}
+
+	_, marketOpen := ctx.Intraday.Get(tick.InstrumentToken)
+	var currentDate time.Time
+
+	if marketOpen {
+		currentPrice = tick.LastPrice
+		currentDate = now
+	} else {
+		// Market is closed: use last candle close
+		if len(candles) == 0 {
+			return rsiReadings{}, 0, false
+		}
+		last := candles[len(candles)-1]
+		currentPrice = last.Close
+		currentDate = last.Date.Time
+		// We remove the last candle since we're using its close as the "current price"
+		candles = candles[:len(candles)-1]
+	}
+
+	if len(candles) < r.Period {
+		return rsiReadings{}, 0, false
+	}
+
+	// series is the daily close series INCLUDING the bar being evaluated, with
+	// currentPrice as its close. Every timeframe is computed from it.
+	series := make([]dailyClose, 0, len(candles)+1)
+	closes := make([]float64, 0, len(candles)+1)
+	for _, c := range candles {
+		series = append(series, dailyClose{Date: c.Date.Time, Close: c.Close})
+		closes = append(closes, c.Close)
+	}
+	series = append(series, dailyClose{Date: currentDate, Close: currentPrice})
+	closes = append(closes, currentPrice)
+
+	daily := rsiSeries(closes, r.Period)
+	if len(daily) < 2 {
+		return rsiReadings{}, 0, false
+	}
+
+	// The weekly RSI as it stood yesterday comes from the series without today's
+	// bar, so a weekly signal fires on the day the weekly RSI makes its move.
+	weeklyToday := rsiSeries(resampleCloses(series, weekBucket), r.WeeklyPeriod)
+	weeklyPrev := rsiSeries(resampleCloses(series[:len(series)-1], weekBucket), r.WeeklyPeriod)
+	monthly := rsiSeries(resampleCloses(series, monthBucket), r.MonthlyPeriod)
+
+	x = rsiReadings{
+		DailyHist:  daily[:len(daily)-1],
+		Daily:      daily[len(daily)-1],
+		WeeklyHist: weeklyPrev,
+	}
+	if len(weeklyToday) > 0 {
+		x.Weekly, x.WeeklyOK = weeklyToday[len(weeklyToday)-1], true
+	}
+	if len(monthly) > 0 {
+		x.Monthly, x.MonthlyOK = monthly[len(monthly)-1], true
+	}
+	return x, currentPrice, true
 }
 
 // readingsOf copies the readings a signal was based on, for the website and

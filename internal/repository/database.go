@@ -12,6 +12,8 @@ import (
 	_ "github.com/mattn/go-sqlite3" // SQLite driver registration via side-effect import
 	kiteconnect "github.com/zerodha/gokiteconnect/v4"
 	kitemodels "github.com/zerodha/gokiteconnect/v4/models"
+
+	"algotrader/internal/domain"
 )
 
 const (
@@ -175,7 +177,9 @@ func (db *DB) LoadHistory(token uint32) ([]kiteconnect.HistoricalData, error) {
 			}
 		}
 		candles = append(candles, kiteconnect.HistoricalData{
-			Date:   kitemodels.Time{Time: t},
+			// Stored in UTC; sessions are IST days (IST midnight is 18:30 UTC the
+			// day before), so hand them back on the IST calendar like Kite does.
+			Date:   kitemodels.Time{Time: t.In(domain.IST)},
 			Open:   open,
 			High:   high,
 			Low:    low,

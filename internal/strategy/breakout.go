@@ -9,11 +9,26 @@ import (
 	"algotrader/internal/domain"
 )
 
-type IchimokuKinkoHyo struct{}
+type IchimokuKinkoHyo struct {
+	// rsi supplies the RSI readings attached to every Ichimoku signal. It uses
+	// the same period as the RSI strategy the engine registers.
+	rsi *RSI
+}
 
-func NewIchimokuKinkoHyo() *IchimokuKinkoHyo { return &IchimokuKinkoHyo{} }
+func NewIchimokuKinkoHyo() *IchimokuKinkoHyo { return &IchimokuKinkoHyo{rsi: NewRSI(14)} }
 
 func (i *IchimokuKinkoHyo) Name() string { return "IchimokuKinkoHyo" }
+
+// Evaluate returns the first Ichimoku signal that fires on this tick, carrying
+// the stock's daily, weekly and monthly RSI at that moment. RSI is only computed
+// when a signal fires, so quiet ticks cost nothing extra.
+func (i *IchimokuKinkoHyo) Evaluate(tick models.Tick, ctx *domain.MarketContext) (bool, domain.OrderSignal) {
+	ok, sig := i.evaluate(tick, ctx)
+	if ok && i.rsi != nil {
+		sig.RSI = i.rsi.Readings(tick, ctx)
+	}
+	return ok, sig
+}
 
 // periodMidpoint returns (highest high + lowest low) / 2 over a candle slice,
 // seeded with today's live intraday high/low so the current session is included.
@@ -30,7 +45,7 @@ func periodMidpoint(candles []kiteconnect.HistoricalData, seedHigh, seedLow floa
 	return (high + low) / 2.0
 }
 
-func (i *IchimokuKinkoHyo) Evaluate(tick models.Tick, ctx *domain.MarketContext) (bool, domain.OrderSignal) {
+func (i *IchimokuKinkoHyo) evaluate(tick models.Tick, ctx *domain.MarketContext) (bool, domain.OrderSignal) {
 
 	// ── 1. Data retrieval ─────────────────────────────────────────────────────
 

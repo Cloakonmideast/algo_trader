@@ -40,6 +40,9 @@ type Processor struct {
 	// saves that failed and are retried.
 	store   SignalSaver
 	pending *saveQueue
+
+	// clock is time.Now outside tests.
+	clock func() time.Time
 }
 
 // maxQueuedSaves bounds the retry queue during a long Supabase outage.
@@ -65,6 +68,7 @@ func NewProcessor(
 		discord:   discordClient,
 		workers:   workerCount,
 		symbolMap: symbolMap,
+		clock:     time.Now,
 	}
 }
 
@@ -133,12 +137,15 @@ func (p *Processor) runWorker(id int) {
 // It enforces the StateRegistry lock to ensure only the first worker to detect a
 // breakout for a given instrument token executes the alert pipeline.
 func (p *Processor) processTick(tick models.Tick) {
-	// Always use wall-clock time for the intraday day-boundary check.
-	// tick.LastTradeTime carries the timestamp of the last actual trade — for stale
-	// after-hours Zerodha packets this is yesterday's date, which would cause the
-	// intraday cache to wrongly report marketOpen=true on a new calendar day.
-	// Wall-clock time is always correct for "what day are we on right now".
-	p.mktCtx.Intraday.UpdateAndGet(tick.InstrumentToken, tick.LastPrice, time.Now())
+	// Only ticks from today's regular session are evaluated; see inLiveSession.
+	now := p.clock().In(domain.IST)
+	if !inLiveSession(now, tick.LastTradeTime.Time) {
+		return
+	}
+
+	// The intraday day boundary is the IST calendar day, whatever the server's
+	// own timezone (UTC on the cloud server).
+	p.mktCtx.Intraday.UpdateAndGet(tick.InstrumentToken, tick.LastPrice, now)
 
 	for _, strat := range p.strategies {
 		// Evaluate the strategy inside a recover so a panic in any strategy

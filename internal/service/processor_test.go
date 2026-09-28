@@ -116,14 +116,67 @@ func (firingStrategy) Evaluate(tick models.Tick, _ *domain.MarketContext) (bool,
 	return true, domain.OrderSignal{InstrumentToken: tick.InstrumentToken, StrategyName: "FakeFamily (SELL)"}
 }
 
+// sessionTime is Tuesday 2026-09-29 at hh:mm IST.
+func sessionTime(hh, mm int) time.Time { return time.Date(2026, 9, 29, hh, mm, 0, 0, domain.IST) }
+
+func tradedAt(t time.Time) models.Time { return models.Time{Time: t} }
+
+func TestInLiveSession(t *testing.T) {
+	yesterdayClose := time.Date(2026, 9, 28, 15, 29, 0, 0, domain.IST)
+	cases := []struct {
+		name           string
+		now, lastTrade time.Time
+		want           bool
+	}{
+		{"mid-session, traded today", sessionTime(11, 0), sessionTime(10, 59), true},
+		{"first minute of the session", sessionTime(9, 15), sessionTime(9, 15), true},
+		{"last minute of the session", sessionTime(15, 29), sessionTime(15, 29), true},
+		{"pre-open", sessionTime(9, 10), sessionTime(9, 8), false},
+		{"after the close", sessionTime(15, 30), sessionTime(15, 29), false},
+		{"after midnight, last trade yesterday", sessionTime(0, 30), yesterdayClose, false},
+		{"weekday holiday: snapshot of the last session", sessionTime(11, 0), yesterdayClose, false},
+		{"no trade time", sessionTime(11, 0), time.Time{}, false},
+		{"Saturday", time.Date(2026, 10, 3, 11, 0, 0, 0, domain.IST), time.Date(2026, 10, 3, 10, 59, 0, 0, domain.IST), false},
+		{"server clock in UTC (05:30 UTC = 11:00 IST)", sessionTime(11, 0).UTC(), sessionTime(10, 59).UTC(), true},
+	}
+	for _, c := range cases {
+		if got := inLiveSession(c.now, c.lastTrade); got != c.want {
+			t.Errorf("%s: inLiveSession = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestProcessTickIgnoresTicksOutsideTheSession(t *testing.T) {
+	saver := &fakeSaver{results: []saveResult{{inserted: true}}}
+	sender := &fakeSender{}
+	mkt := domain.NewMarketContext()
+	p := NewProcessor(10, 1, domain.NewStateRegistry(), mkt, sender, nil)
+	p.UseStore(saver)
+	p.RegisterStrategy(firingStrategy{})
+	p.clock = func() time.Time { return sessionTime(0, 30) }
+
+	p.processTick(models.Tick{InstrumentToken: 7, LastPrice: 50, LastTradeTime: tradedAt(time.Date(2026, 9, 28, 15, 29, 0, 0, domain.IST))})
+	time.Sleep(50 * time.Millisecond)
+
+	saver.mu.Lock()
+	defer saver.mu.Unlock()
+	if len(saver.calls) != 0 || len(sender.sent) != 0 {
+		t.Errorf("a tick at 00:30 must not fire signals: saves=%d alerts=%d", len(saver.calls), len(sender.sent))
+	}
+	if _, ok := mkt.Intraday.Get(7); ok {
+		t.Error("a tick at 00:30 must not start an intraday candle")
+	}
+}
+
 func TestProcessTickEnrichesSavedSignals(t *testing.T) {
 	saver := &fakeSaver{results: []saveResult{{inserted: true}}}
 	sender := &fakeSender{}
 	p := NewProcessor(10, 1, domain.NewStateRegistry(), domain.NewMarketContext(), sender, map[uint32]string{7: "TCS"})
 	p.UseStore(saver)
 	p.RegisterStrategy(firingStrategy{})
+	p.clock = func() time.Time { return sessionTime(11, 0) }
 
-	p.processTick(models.Tick{InstrumentToken: 7, LastPrice: 50.25})
+	p.processTick(models.Tick{InstrumentToken: 7, LastPrice: 50.25, LastTradeTime: tradedAt(sessionTime(10, 59))})
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {

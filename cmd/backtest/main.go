@@ -35,6 +35,7 @@ import (
 	kiteconnect "github.com/zerodha/gokiteconnect/v4"
 
 	"algotrader/internal/backtest"
+	"algotrader/internal/domain"
 	"algotrader/internal/service"
 	"algotrader/internal/strategy"
 )
@@ -517,7 +518,8 @@ func parseDate(s string) (time.Time, error) {
 	if s == "" {
 		return time.Time{}, nil
 	}
-	t, err := time.Parse("2006-01-02", s)
+	// Sessions are timestamped at IST midnight, so the day starts there too.
+	t, err := time.ParseInLocation("2006-01-02", s, domain.IST)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("%q is not a YYYY-MM-DD date", s)
 	}

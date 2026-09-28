@@ -6,8 +6,28 @@ import (
 	"algotrader/internal/domain"
 )
 
-// marketCloseMinute is 15:30 IST: before it, today's daily candle is unfinished.
-const marketCloseMinute = 15*60 + 30
+// marketOpenMinute and marketCloseMinute bound NSE's regular session, 09:15 to
+// 15:30 IST. Before the close, today's daily candle is unfinished.
+const (
+	marketOpenMinute  = 9*60 + 15
+	marketCloseMinute = 15*60 + 30
+)
+
+// inLiveSession reports whether a tick arriving at now belongs to today's
+// regular session: a weekday, between the open and the close, from a trade made
+// today. Kite also sends ticks outside the session (e.g. a snapshot on every
+// reconnect, including at night and on holidays); strategies must not see those,
+// or they would treat the last session as a new day and alert on stale data.
+func inLiveSession(now, lastTrade time.Time) bool {
+	n := now.In(domain.IST)
+	if isWeekend(n) {
+		return false
+	}
+	if m := n.Hour()*60 + n.Minute(); m < marketOpenMinute || m >= marketCloseMinute {
+		return false
+	}
+	return !lastTrade.IsZero() && dayStart(lastTrade).Equal(dayStart(n))
+}
 
 // calendarToken is the NIFTY 50 index. It has a daily candle for exactly the
 // days NSE traded, so it serves as the trading calendar (holidays included)

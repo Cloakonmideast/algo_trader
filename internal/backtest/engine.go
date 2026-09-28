@@ -820,7 +820,8 @@ func loadCandles(db *sql.DB, token uint32) ([]kiteconnect.HistoricalData, error)
 			}
 		}
 		candles = append(candles, kiteconnect.HistoricalData{
-			Date:   kitemodels.Time{Time: t},
+			// Stored in UTC; sessions are IST days, so read them on the IST calendar.
+			Date:   kitemodels.Time{Time: t.In(domain.IST)},
 			Open:   open,
 			High:   high,
 			Low:    low,
