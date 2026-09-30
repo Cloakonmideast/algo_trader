@@ -1,6 +1,7 @@
 import { shortSignalName } from "@/lib/catalog";
 import { istTime } from "@/lib/time";
-import type { Signal, SortKey } from "@/lib/types";
+import type { Signal, SortKey, TradeMarks } from "@/lib/types";
+import { TradeButtons } from "./TradeButtons";
 
 const price = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const rsi = (v: number | null) => (v === null ? "—" : v.toFixed(1));
@@ -24,6 +25,7 @@ export function SignalsTable({
   activeSort,
   order,
   emptyText = "No signals.",
+  marks,
 }: {
   rows: Signal[];
   showDate?: boolean;
@@ -31,6 +33,7 @@ export function SignalsTable({
   activeSort?: SortKey;
   order?: "asc" | "desc";
   emptyText?: string;
+  marks?: TradeMarks;
 }) {
   if (rows.length === 0) {
     return (
@@ -64,6 +67,7 @@ export function SignalsTable({
             <th className="px-3 py-2">Side</th>
             <th className="px-3 py-2 text-right">Price</th>
             <th className="px-3 py-2 text-right">RSI D / W / M</th>
+            <th className="px-3 py-2">Trade</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -84,6 +88,9 @@ export function SignalsTable({
                 {r.rsiDaily === null && r.rsiWeekly === null && r.rsiMonthly === null
                   ? "—"
                   : `${rsi(r.rsiDaily)} / ${rsi(r.rsiWeekly)} / ${rsi(r.rsiMonthly)}`}
+              </td>
+              <td className="px-3 py-2">
+                <TradeButtons signalId={r.id} initial={marks?.[r.id]} />
               </td>
             </tr>
           ))}

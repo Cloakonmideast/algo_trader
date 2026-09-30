@@ -37,3 +37,6 @@ missing settings.
   request token and saves it to `kite_session` for the engine to pick up.
 - Excel files are built in the browser (`src/lib/excel.ts`) from paged
   `/api/signals` calls.
+- Trades (the `/trades` tab and the Buy/Sell buttons on signal rows) live in
+  the `trades` table (`supabase/migrations/002_trades.sql`). Pages read them
+  through the store; `POST /api/trades` and `DELETE /api/trades/[id]` write.

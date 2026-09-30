@@ -11,7 +11,8 @@ export async function Header() {
   return (
     <header className="border-b border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3">
-        <div className="flex items-center gap-4">
+        {/* Wraps on phones: the brand and four nav links don't fit one 390px line. */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <span className="font-semibold">AlgoTrader</span>
           <NavLinks />
         </div>

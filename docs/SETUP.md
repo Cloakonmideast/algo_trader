@@ -99,8 +99,9 @@ and that **`.env` and `market_data.db` are not**. The repo should say
 2. Open `supabase/migrations/001_init.sql` from this repo, copy **all** of it,
    and paste it into the editor.
 3. Click **Run**. You should see "Success. No rows returned".
-4. Left sidebar → **Table Editor**. You should see `signals`, `kite_session`
-   and `engine_status`, each without a red "RLS disabled" warning.
+4. Do the same with `supabase/migrations/002_trades.sql` (the Trades tab).
+5. Left sidebar → **Table Editor**. You should see `signals`, `kite_session`,
+   `engine_status` and `trades`, each without a red "RLS disabled" warning.
 
 ### 2.3 Copy the two values the website needs
 
@@ -494,6 +495,11 @@ git push
 
 Vercel rebuilds and redeploys automatically in about 1–2 minutes. Watch it
 under your project → **Deployments**.
+
+If an update adds a file to `supabase/migrations/` (for example
+`002_trades.sql` for the Trades tab), run it once in Supabase → **SQL Editor**
+before pushing. The site shows "Couldn't load signals" on the pages that need
+the new table until you do.
 
 ## Troubleshooting
 

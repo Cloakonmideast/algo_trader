@@ -6,6 +6,7 @@ import { STRATEGIES, STRATEGY_NAMES, shortSignalName } from "@/lib/catalog";
 import { applyFilter } from "@/lib/filter-rows";
 import { baseFilter, first } from "@/lib/filters";
 import { getStore } from "@/lib/store";
+import { tradeMarksOrEmpty } from "@/lib/store/marks";
 import { ALL_CAP } from "@/lib/store/types";
 import { summarize, withCatalog } from "@/lib/summary";
 import { isISODate, todayIST } from "@/lib/time";
@@ -28,6 +29,7 @@ export default async function StrategiesPage({ searchParams }: { searchParams: S
     signals: signal ? [signal] : [],
   });
   const shown = applyFilter(dayRows, selection);
+  const marks = await tradeMarksOrEmpty(getStore(), shown.map((r) => r.id));
 
   // A signal with no fires that day has no row to read its family from, so fall back to the catalog.
   const family = signal
@@ -52,7 +54,7 @@ export default async function StrategiesPage({ searchParams }: { searchParams: S
           <ExportButton filter={selection} />
         </div>
         <DayNav date={date} today={today} extra={extra} />
-        <SignalsTable rows={shown} emptyText="No signals for this selection on this day." />
+        <SignalsTable rows={shown} marks={marks} emptyText="No signals for this selection on this day." />
       </section>
     </div>
   );

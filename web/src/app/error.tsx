@@ -15,7 +15,8 @@ export default function ErrorPage({ error, retry }: { error: Error & { digest?: 
       <h1 className="text-xl font-semibold">Couldn&apos;t load signals</h1>
       <p className="text-sm text-slate-600 dark:text-slate-400">
         The site couldn&apos;t read from Supabase. Usually <code>SUPABASE_URL</code> or <code>SUPABASE_SERVICE_KEY</code> is
-        missing or wrong, the tables haven&apos;t been created yet (run <code>supabase/migrations/001_init.sql</code>), or
+        missing or wrong, the tables haven&apos;t been created yet (run <code>supabase/migrations/001_init.sql</code>, and{" "}
+        <code>002_trades.sql</code> for the Trades tab), or
         Supabase is temporarily unreachable.
       </p>
       {dev ? (

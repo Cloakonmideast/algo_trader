@@ -3,14 +3,14 @@
 import { useEffect, useState } from "react";
 import { baseFilter } from "@/lib/filters";
 import { istTime } from "@/lib/time";
-import type { Signal } from "@/lib/types";
+import type { Signal, TradeMarks } from "@/lib/types";
 import { ExportButton } from "./ExportButton";
 import { SignalsTable } from "./SignalsTable";
 import { SummaryCards } from "./SummaryCards";
 
 const REFRESH_MS = 30_000;
 
-export function LiveSignals({ date, initialRows }: { date: string; initialRows: Signal[] }) {
+export function LiveSignals({ date, initialRows, marks }: { date: string; initialRows: Signal[]; marks: TradeMarks }) {
   const [rows, setRows] = useState(initialRows);
   const [updated, setUpdated] = useState<string | null>(null);
 
@@ -46,7 +46,7 @@ export function LiveSignals({ date, initialRows }: { date: string; initialRows: 
         </div>
         <ExportButton filter={baseFilter({ from: date, to: date })} label="Export today" />
       </div>
-      <SignalsTable rows={rows} emptyText="No signals yet today." />
+      <SignalsTable rows={rows} marks={marks} emptyText="No signals yet today." />
     </div>
   );
 }

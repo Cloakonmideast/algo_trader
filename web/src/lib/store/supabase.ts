@@ -1,9 +1,11 @@
 import "server-only";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { tokenValidToday } from "@/lib/time";
-import type { Signal, SignalFilter, Status } from "@/lib/types";
+import { chunk, tradeMarksFrom } from "@/lib/trades";
+import type { NewTrade, Side, Signal, SignalFilter, Status, Trade, TradeFilter, TradeMarks } from "@/lib/types";
 import { SIGNAL_COLUMNS, applyFilterToQuery, toSignal, type FilterableQuery, type SignalRow } from "./query";
-import { MAX_PAGE_SIZE, TooManyRowsError, type SignalStore } from "./types";
+import { TRADE_COLUMNS, applyTradeFilter, toTrade, type TradeRow } from "./trade-query";
+import { MARKS_BATCH, MAX_PAGE_SIZE, TooManyRowsError, type SignalStore } from "./types";
 
 export class SupabaseStore implements SignalStore {
   private db: SupabaseClient;
@@ -57,5 +59,71 @@ export class SupabaseStore implements SignalStore {
       .from("kite_session")
       .upsert({ id: 1, access_token: accessToken, user_id: userId, created_at: new Date().toISOString() });
     if (error) throw new Error(`Supabase: ${error.message}`);
+  }
+
+  async getSignal(id: number): Promise<Signal | null> {
+    const { data, error } = await this.db.from("signals").select(SIGNAL_COLUMNS).eq("id", id).maybeSingle();
+    if (error) throw new Error(`Supabase: ${error.message}`);
+    return data ? toSignal(data as unknown as SignalRow) : null;
+  }
+
+  async addTrade(t: NewTrade): Promise<{ trade: Trade; created: boolean }> {
+    const row = {
+      trade_date: t.tradeDate,
+      symbol: t.symbol,
+      side: t.side,
+      price: t.price,
+      signal_id: t.signalId,
+      signal: t.signal,
+    };
+    if (t.signalId === null) {
+      const { data, error } = await this.db.from("trades").insert(row).select(TRADE_COLUMNS).single();
+      if (error) throw new Error(`Supabase: ${error.message}`);
+      return { trade: toTrade(data as unknown as TradeRow), created: true };
+    }
+
+    // One buy and one sell per signal: a repeat click must not error, so skip the
+    // duplicate and hand back the trade that is already there.
+    const { data, error } = await this.db
+      .from("trades")
+      .upsert(row, { onConflict: "signal_id,side", ignoreDuplicates: true })
+      .select(TRADE_COLUMNS);
+    if (error) throw new Error(`Supabase: ${error.message}`);
+    const inserted = data as unknown as TradeRow[];
+    if (inserted.length > 0) return { trade: toTrade(inserted[0]), created: true };
+
+    const existing = await this.db
+      .from("trades")
+      .select(TRADE_COLUMNS)
+      .eq("signal_id", t.signalId)
+      .eq("side", t.side)
+      .single();
+    if (existing.error) throw new Error(`Supabase: ${existing.error.message}`);
+    return { trade: toTrade(existing.data as unknown as TradeRow), created: false };
+  }
+
+  async deleteTrade(id: number): Promise<void> {
+    const { error } = await this.db.from("trades").delete().eq("id", id);
+    if (error) throw new Error(`Supabase: ${error.message}`);
+  }
+
+  async listTrades(f: TradeFilter, cap: number): Promise<{ rows: Trade[]; total: number }> {
+    const base = this.db.from("trades").select(TRADE_COLUMNS, { count: "exact" });
+    const query = applyTradeFilter(base as unknown as FilterableQuery, f) as unknown as typeof base;
+    const { data, count, error } = await query.range(0, cap - 1);
+    if (error) throw new Error(`Supabase: ${error.message}`);
+    return { rows: (data as unknown as TradeRow[]).map(toTrade), total: count ?? 0 };
+  }
+
+  async tradeMarks(signalIds: number[]): Promise<TradeMarks> {
+    const rows: { id: number; signalId: number | null; side: Side }[] = [];
+    for (const ids of chunk([...new Set(signalIds)], MARKS_BATCH)) {
+      const { data, error } = await this.db.from("trades").select("id,signal_id,side").in("signal_id", ids);
+      if (error) throw new Error(`Supabase: ${error.message}`);
+      for (const r of data as { id: number; signal_id: number | null; side: Side }[]) {
+        rows.push({ id: r.id, signalId: r.signal_id, side: r.side });
+      }
+    }
+    return tradeMarksFrom(rows);
   }
 }

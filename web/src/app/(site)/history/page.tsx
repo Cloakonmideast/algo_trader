@@ -4,6 +4,7 @@ import { Pager } from "@/components/Pager";
 import { SignalsTable } from "@/components/SignalsTable";
 import { filterToParams, first, parseFilter } from "@/lib/filters";
 import { getStore } from "@/lib/store";
+import { tradeMarksOrEmpty } from "@/lib/store/marks";
 import { addDays, todayIST } from "@/lib/time";
 import type { SignalFilter, SortKey } from "@/lib/types";
 
@@ -22,6 +23,7 @@ export default async function HistoryPage({ searchParams }: { searchParams: SP }
   // A stale link (e.g. page 5 after narrowing the filters) lands on the last page instead of an empty one.
   const page = Math.min(requested, pages);
   if (page !== requested) ({ rows, total } = await store.list(filter, (page - 1) * PAGE_SIZE, PAGE_SIZE));
+  const marks = await tradeMarksOrEmpty(store, rows.map((r) => r.id));
 
   const withParams = (f: SignalFilter, p?: number) => {
     const params = filterToParams(f);
@@ -54,6 +56,7 @@ export default async function HistoryPage({ searchParams }: { searchParams: SP }
         sortLinks={sortLinks}
         activeSort={filter.sort}
         order={filter.order}
+        marks={marks}
         emptyText="No signals match these filters."
       />
       <Pager page={page} pages={pages} href={(p) => withParams(filter, p)} />

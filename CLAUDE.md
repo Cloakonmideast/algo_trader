@@ -70,4 +70,5 @@ Next.js 16 on Vercel, which reads Supabase server-side only. See `web/README.md`
 - There is no demo data. Every environment needs `SUPABASE_URL`/`SUPABASE_SERVICE_KEY`, and `src/app/error.tsx` explains what to check when Supabase can't be read.
 - Signal names in `src/lib/catalog.ts` mirror the Go engine's. Update both together, and keep `directionOf` in step with `backtest.InferDirection`.
 - The Kite `access_token` must never reach the browser. `SupabaseStore.status()` deliberately selects only `created_at`.
+- Trades: the `trades` table (`supabase/migrations/002_trades.sql`), Buy/Sell buttons (`TradeButtons`) on every signals table, and the `/trades` page. `POST /api/trades` and `DELETE /api/trades/[id]` are the only writes and reject a cross-site `Origin`. A signal trade's stock, price and day are copied server-side from the signal. Stock suggestions: `src/lib/nse-symbols.json`, regenerated with `go run ./scripts/gen_web_symbols.go`.
 - Schema: `supabase/migrations/001_init.sql`. Setup steps: `docs/SETUP.md`.
