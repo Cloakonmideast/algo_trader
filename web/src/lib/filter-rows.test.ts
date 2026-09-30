@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyFilter, matchesFilter } from "./filter-rows";
+import { applyFilter, matchesFilter, sortSignals } from "./filter-rows";
 import { baseFilter } from "./filters";
 import type { Signal } from "./types";
 
@@ -62,5 +62,31 @@ describe("applyFilter sorting", () => {
   });
   it("sorts by signal descending", () => {
     expect(applyFilter(rows, baseFilter({ sort: "signal", order: "desc" })).map((r) => r.id)).toEqual([1, 2, 3]);
+  });
+});
+
+describe("sortSignals", () => {
+  const ids = (xs: Signal[]) => xs.map((r) => r.id);
+  const more = [
+    ...rows,
+    row({ id: 4, symbol: "WIPRO", signal: "RSI (Bearish GFS)", direction: "short", firedAt: "2026-09-24T07:00:00Z" }),
+  ];
+
+  it("sorts by side, Longs first, newest first within a side", () => {
+    expect(ids(sortSignals(more, "side", "asc"))).toEqual([1, 3, 4, 2]);
+    expect(ids(sortSignals(more, "side", "desc"))).toEqual([4, 2, 1, 3]);
+  });
+  it("sorts by signal name, newest first within a signal", () => {
+    expect(ids(sortSignals(more, "signal", "asc"))).toEqual([3, 4, 2, 1]);
+    expect(ids(sortSignals(more, "signal", "desc"))).toEqual([1, 4, 2, 3]);
+  });
+  it("sorts by time and by symbol", () => {
+    expect(ids(sortSignals(more, "time", "desc"))).toEqual([4, 2, 1, 3]);
+    expect(ids(sortSignals(more, "symbol", "asc"))).toEqual([2, 3, 1, 4]);
+  });
+  it("leaves the input array alone", () => {
+    const copy = [...more];
+    sortSignals(more, "side", "desc");
+    expect(more).toEqual(copy);
   });
 });

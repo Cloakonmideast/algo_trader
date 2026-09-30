@@ -1,7 +1,7 @@
 import { shortSignalName } from "./catalog";
 import { first, type SearchParamsLike } from "./filters";
 import { isISODate } from "./time";
-import type { NewTrade, Side, Signal, TradeFilter, TradeInput, TradeMarks } from "./types";
+import type { NewTrade, Side, Signal, Trade, TradeFilter, TradeInput, TradeMarks } from "./types";
 
 /** NSE trading symbols: capitals, digits, "&" and "-" (e.g. M&M, BAJAJ-AUTO). Same rule as the SQL check. */
 export const SYMBOL_RE = /^[A-Z0-9&-]{1,30}$/;
@@ -141,4 +141,28 @@ export function manualTrade(input: Extract<TradeInput, { kind: "manual" }>): New
     signalId: null,
     signal: null,
   };
+}
+
+export type TradeColumn = "date" | "stock" | "side" | "from";
+
+const newestTradeFirst = (a: Trade, b: Trade) => b.tradeDate.localeCompare(a.tradeDate) || b.id - a.id;
+
+/**
+ * A sorted copy of the Trades table. Ties stay newest first; by "from", manual
+ * trades (no signal) go last in either order.
+ */
+export function sortTrades(rows: Trade[], sort: TradeColumn, order: "asc" | "desc"): Trade[] {
+  const dir = order === "asc" ? 1 : -1;
+  const cmp: (a: Trade, b: Trade) => number =
+    sort === "stock"
+      ? (a, b) => dir * a.symbol.localeCompare(b.symbol) || newestTradeFirst(a, b)
+      : sort === "side" // buy before sell when ascending
+        ? (a, b) => dir * a.side.localeCompare(b.side) || newestTradeFirst(a, b)
+        : sort === "from"
+          ? (a, b) =>
+              (a.signal === null ? 1 : 0) - (b.signal === null ? 1 : 0) ||
+              (a.signal !== null && b.signal !== null ? dir * a.signal.localeCompare(b.signal) : 0) ||
+              newestTradeFirst(a, b)
+          : (a, b) => dir * (a.tradeDate.localeCompare(b.tradeDate) || a.id - b.id);
+  return [...rows].sort(cmp);
 }

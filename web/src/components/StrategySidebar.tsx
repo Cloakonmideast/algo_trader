@@ -20,7 +20,7 @@ export function StrategySidebar({
   const count = (n: number) => <span className={`tabular-nums ${n === 0 ? "opacity-40" : ""}`}>{n}</span>;
 
   return (
-    <nav className="w-full shrink-0 space-y-4 md:w-72">
+    <nav className="w-full shrink-0 space-y-4 xl:w-64">
       <a href={href({})} className={item(!strategy && !signal)}>
         <span className="font-medium">All strategies</span>
         {count(model.reduce((n, s) => n + s.total, 0))}

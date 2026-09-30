@@ -41,7 +41,7 @@ export default async function StrategiesPage({ searchParams }: { searchParams: S
   const extra: Record<string, string> = signal ? { signal } : strategy ? { strategy } : {};
 
   return (
-    <div className="flex flex-col gap-6 md:flex-row">
+    <div className="flex flex-col gap-6 xl:flex-row">
       <StrategySidebar model={withCatalog(summarize(dayRows))} date={date} strategy={strategy} signal={signal} />
       <section className="min-w-0 flex-1 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">

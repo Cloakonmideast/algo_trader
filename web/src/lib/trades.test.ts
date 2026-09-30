@@ -10,10 +10,11 @@ import {
   parseTradeFilter,
   parseTradeInput,
   signalSource,
+  sortTrades,
   tradeFromSignal,
   tradeMarksFrom,
 } from "./trades";
-import type { Signal } from "./types";
+import type { Signal, Trade } from "./types";
 
 const TODAY = "2026-09-28";
 
@@ -212,5 +213,46 @@ describe("manualTradeBody", () => {
       price: 3500,
       tradeDate: "2026-09-01",
     });
+  });
+});
+
+describe("sortTrades", () => {
+  const t = (p: Partial<Trade>): Trade => ({
+    id: 1,
+    createdAt: "2026-09-28T04:00:00Z",
+    tradeDate: "2026-09-28",
+    symbol: "TCS",
+    side: "buy",
+    price: null,
+    signalId: null,
+    signal: null,
+    ...p,
+  });
+  // Newest first, as the store returns them.
+  const trades = [
+    t({ id: 5, tradeDate: "2026-09-29", symbol: "INFY", side: "sell", signalId: 9, signal: "RSI (GFS)" }),
+    t({ id: 4, tradeDate: "2026-09-29", symbol: "TCS", side: "buy" }),
+    t({ id: 3, tradeDate: "2026-09-28", symbol: "M&M", side: "buy", signalId: 7, signal: "IchimokuKinkoHyo (Future BUY)" }),
+    t({ id: 2, tradeDate: "2026-09-27", symbol: "WIPRO", side: "sell" }),
+  ];
+  const ids = (xs: Trade[]) => xs.map((x) => x.id);
+
+  it("sorts by side, buys first, newest first within a side", () => {
+    expect(ids(sortTrades(trades, "side", "asc"))).toEqual([4, 3, 5, 2]);
+    expect(ids(sortTrades(trades, "side", "desc"))).toEqual([5, 2, 4, 3]);
+  });
+  it("sorts by the signal a trade came from, with manual trades last either way", () => {
+    expect(ids(sortTrades(trades, "from", "asc"))).toEqual([3, 5, 4, 2]);
+    expect(ids(sortTrades(trades, "from", "desc"))).toEqual([5, 3, 4, 2]);
+  });
+  it("sorts by date and by stock", () => {
+    expect(ids(sortTrades(trades, "date", "asc"))).toEqual([2, 3, 4, 5]);
+    expect(ids(sortTrades(trades, "date", "desc"))).toEqual([5, 4, 3, 2]);
+    expect(ids(sortTrades(trades, "stock", "asc"))).toEqual([5, 3, 4, 2]);
+  });
+  it("leaves the input array alone", () => {
+    const copy = [...trades];
+    sortTrades(trades, "side", "desc");
+    expect(trades).toEqual(copy);
   });
 });

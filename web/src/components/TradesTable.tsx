@@ -1,6 +1,11 @@
-import { signalSource } from "@/lib/trades";
+"use client";
+
+import { useMemo, useState } from "react";
+import { nextSort, type SortState } from "@/lib/table-sort";
+import { signalSource, sortTrades, type TradeColumn } from "@/lib/trades";
 import type { Trade } from "@/lib/types";
 import { RemoveTradeButton } from "./RemoveTradeButton";
+import { SortHeader } from "./SortHeader";
 
 const price = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -16,7 +21,21 @@ function SideBadge({ side }: { side: Trade["side"] }) {
   );
 }
 
+const firstOrder = (key: TradeColumn) => (key === "date" ? "desc" : "asc");
+
+/** Rows arrive newest first; clicking a header sorts them here. */
 export function TradesTable({ rows }: { rows: Trade[] }) {
+  const [sort, setSort] = useState<SortState<TradeColumn>>({ key: "date", order: "desc" });
+  const shown = useMemo(() => sortTrades(rows, sort.key, sort.order), [rows, sort]);
+  const head = (label: string, key: TradeColumn) => (
+    <SortHeader
+      label={label}
+      active={sort.key === key}
+      order={sort.order}
+      onClick={() => setSort((cur) => nextSort(cur, key, firstOrder))}
+    />
+  );
+
   if (rows.length === 0) {
     return (
       <p className="rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500 dark:border-slate-700">
@@ -30,16 +49,16 @@ export function TradesTable({ rows }: { rows: Trade[] }) {
       <table className="min-w-full text-sm">
         <thead className="bg-slate-100 text-left text-xs uppercase tracking-wide text-slate-600 dark:bg-slate-800 dark:text-slate-300">
           <tr>
-            <th className="px-3 py-2">Date</th>
-            <th className="px-3 py-2">Stock</th>
-            <th className="px-3 py-2">Side</th>
+            {head("Date", "date")}
+            {head("Stock", "stock")}
+            {head("Side", "side")}
             <th className="px-3 py-2 text-right">Price</th>
-            <th className="px-3 py-2">From</th>
+            {head("From", "from")}
             <th className="px-3 py-2" />
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-          {rows.map((t) => {
+          {shown.map((t) => {
             const src = signalSource(t.signal);
             return (
               <tr key={t.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">

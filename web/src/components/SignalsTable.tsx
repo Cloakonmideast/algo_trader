@@ -1,6 +1,13 @@
+"use client";
+
+import { useMemo, useState } from "react";
 import { shortSignalName } from "@/lib/catalog";
+import { type SignalColumn, sortSignals } from "@/lib/filter-rows";
+import { kiteChartUrl } from "@/lib/kite-chart";
+import { nextSort, type SortState } from "@/lib/table-sort";
 import { istTime } from "@/lib/time";
 import type { Signal, SortKey, TradeMarks } from "@/lib/types";
+import { SortHeader } from "./SortHeader";
 import { TradeButtons } from "./TradeButtons";
 
 const price = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -18,6 +25,12 @@ export function DirectionBadge({ direction }: { direction: Signal["direction"] }
   );
 }
 
+const firstOrder = (key: SignalColumn) => (key === "time" ? "desc" : "asc");
+
+/**
+ * With `sortLinks` (History), the headers link to a server-sorted page. Without
+ * them (Dashboard, Strategies), clicking a header sorts the rows here.
+ */
 export function SignalsTable({
   rows,
   showDate = false,
@@ -35,6 +48,9 @@ export function SignalsTable({
   emptyText?: string;
   marks?: TradeMarks;
 }) {
+  const [sort, setSort] = useState<SortState<SignalColumn>>({ key: "time", order: "desc" });
+  const shown = useMemo(() => (sortLinks ? rows : sortSignals(rows, sort.key, sort.order)), [rows, sortLinks, sort]);
+
   if (rows.length === 0) {
     return (
       <p className="rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500 dark:border-slate-700">
@@ -43,15 +59,27 @@ export function SignalsTable({
     );
   }
 
-  const head = (label: string, key?: SortKey) => {
-    const href = key ? sortLinks?.[key] : undefined;
-    if (!href) return label;
+  const head = (label: string, key: SignalColumn) => {
+    if (!sortLinks) {
+      return (
+        <SortHeader
+          label={label}
+          active={sort.key === key}
+          order={sort.order}
+          onClick={() => setSort((cur) => nextSort(cur, key, firstOrder))}
+        />
+      );
+    }
+    const href = key !== "side" ? sortLinks[key as SortKey] : undefined;
+    if (!href) return <th className="px-3 py-2">{label}</th>;
     const arrow = activeSort === key ? (order === "asc" ? " ↑" : " ↓") : "";
     return (
-      <a href={href} className="hover:underline">
-        {label}
-        {arrow}
-      </a>
+      <th className="px-3 py-2">
+        <a href={href} className="hover:underline">
+          {label}
+          {arrow}
+        </a>
+      </th>
     );
   };
 
@@ -61,21 +89,31 @@ export function SignalsTable({
         <thead className="bg-slate-100 text-left text-xs uppercase tracking-wide text-slate-600 dark:bg-slate-800 dark:text-slate-300">
           <tr>
             {showDate && <th className="px-3 py-2">Date</th>}
-            <th className="px-3 py-2">{head("Time", "time")}</th>
-            <th className="px-3 py-2">{head("Symbol", "symbol")}</th>
-            <th className="px-3 py-2">{head("Signal", "signal")}</th>
-            <th className="px-3 py-2">Side</th>
+            {head("Time", "time")}
+            {head("Symbol", "symbol")}
+            {head("Signal", "signal")}
+            {head("Side", "side")}
             <th className="px-3 py-2 text-right">Price</th>
             <th className="px-3 py-2 text-right">RSI D / W / M</th>
             <th className="px-3 py-2">Trade</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-          {rows.map((r) => (
+          {shown.map((r) => (
             <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
               {showDate && <td className="whitespace-nowrap px-3 py-2 tabular-nums">{r.tradeDate}</td>}
               <td className="whitespace-nowrap px-3 py-2 tabular-nums">{istTime(r.firedAt)}</td>
-              <td className="whitespace-nowrap px-3 py-2 font-medium">{r.symbol}</td>
+              <td className="whitespace-nowrap px-3 py-2 font-medium">
+                <a
+                  href={kiteChartUrl(r.symbol, r.token)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={`Open ${r.symbol} on Kite`}
+                  className="hover:underline"
+                >
+                  {r.symbol}
+                </a>
+              </td>
               <td className="whitespace-nowrap px-3 py-2">
                 {shortSignalName(r.signal, r.strategy)}
                 <span className="ml-2 text-xs text-slate-500">{r.strategy}</span>
