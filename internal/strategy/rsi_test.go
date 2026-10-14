@@ -48,7 +48,7 @@ func day(y int, m time.Month, d int, close float64) dailyClose {
 }
 
 func TestResampleClosesWeekly(t *testing.T) {
-	// 2024-01-01 is a Monday, so each Mon–Fri block is one ISO week.
+	// 2024-01-01 is a Monday, so each Monâ€“Fri block is one ISO week.
 	series := []dailyClose{
 		day(2024, time.January, 1, 10), // ISO week 1
 		day(2024, time.January, 3, 11),
@@ -70,7 +70,7 @@ func TestResampleClosesWeekly(t *testing.T) {
 	}
 }
 
-// A week spanning a year boundary must stay one bucket — that is precisely what
+// A week spanning a year boundary must stay one bucket â€” that is precisely what
 // ISO week numbering buys us over (year, week-of-year).
 func TestResampleClosesWeeklyAcrossYearBoundary(t *testing.T) {
 	series := []dailyClose{
@@ -131,13 +131,13 @@ func TestRSIFromCloses(t *testing.T) {
 		t.Errorf("an unbroken decline should read 0, got %v", got)
 	}
 
-	// Too short to seed the average — reported as unknown, not as oversold.
+	// Too short to seed the average â€” reported as unknown, not as oversold.
 	if got := rsiFromCloses(rising[:14], 14); got != 0 {
 		t.Errorf("a series of exactly `period` closes cannot seed an RSI, got %v", got)
 	}
 }
 
-// The Advanced GFS daily leg: band 57–63, turning up above 60.
+// The Advanced GFS daily leg: band 57â€“63, turning up above 60.
 func TestAdvancedGFSDailyLeg(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -165,7 +165,7 @@ func TestAdvancedGFSDailyLeg(t *testing.T) {
 	}
 }
 
-// The GFS daily leg: band 37–44, turning up above 40.
+// The GFS daily leg: band 37â€“44, turning up above 40.
 func TestGFSDailyLeg(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -243,24 +243,25 @@ func TestRSISeriesMatchesRSIFromCloses(t *testing.T) {
 	}
 }
 
-func TestPriorRange(t *testing.T) {
+func TestRangeStateOf(t *testing.T) {
 	cases := []struct {
 		name string
 		hist []float64
 		want rsiRange
 	}{
-		{"empty history", nil, rangeUnknown},
-		{"never left the 40–60 overlap", []float64{45, 52, 58, 41}, rangeUnknown},
-		{"last extreme was a high", []float64{35, 65, 52, 48}, rangeBull},
-		{"last extreme was a low", []float64{65, 38, 47, 55, 58}, rangeBear},
-		{"touching exactly 60 counts as bull", []float64{30, 60, 50}, rangeBull},
-		{"touching exactly 40 counts as bear", []float64{70, 40, 50}, rangeBear},
-		{"yesterday itself is the extreme", []float64{70, 50, 39}, rangeBear},
+		{"empty history", nil, rangeSideways},
+		{"never broke out of 38â€“61", []float64{45, 52, 61, 38, 41}, rangeSideways},
+		{"above 61 is bull", []float64{45, 62, 52, 48}, rangeBull},
+		{"below 38 is bear", []float64{65, 37, 47, 55, 61}, rangeBear},
+		{"bear holding 40 after leaving it shifts to sideways", []float64{30, 48, 39, 42}, rangeSideways},
+		{"bull failing at 60 after leaving it shifts to sideways", []float64{70, 55, 61, 58}, rangeSideways},
+		{"sideways breaks up into bull", []float64{30, 48, 39, 42, 60, 41, 66}, rangeBull},
+		{"sideways breaks down into bear", []float64{70, 55, 61, 58, 40, 60, 35}, rangeBear},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := priorRange(tc.hist); got != tc.want {
-				t.Errorf("priorRange(%v) = %v, want %v", tc.hist, got, tc.want)
+			if got := rangeStateOf(tc.hist).regime; got != tc.want {
+				t.Errorf("rangeStateOf(%v) = %v, want %v", tc.hist, got, tc.want)
 			}
 		})
 	}
@@ -273,26 +274,31 @@ func TestRangeEventAt(t *testing.T) {
 		today float64
 		want  rangeEvent
 	}{
-		// Bullish range-shift: bear range, crosses above 60.
-		{"bear range crosses above 60", []float64{65, 52, 38, 47, 55, 58}, 62, bullishShift},
-		{"bull range re-crossing 60 is continuation", []float64{68, 55, 48}, 61, noEvent},
-		{"bear range rising but not through 60", []float64{35, 44, 53}, 60, noEvent},
+		// Bullish range-shift: bear, RSI has left the 40 zone, comes back and holds it.
+		{"bear range holds 40 after leaving it", []float64{30, 48, 39}, 42, bullishShift},
+		{"bear range first rise through 40 is not a shift", []float64{30, 35, 39}, 42, noEvent},
+		{"bear range back at 40 but still falling", []float64{30, 48, 42}, 39, strongBearish},
+		{"crossing 60 out of a bear range is no longer a signal", []float64{65, 52, 35, 47, 55, 58}, 62, noEvent},
 
-		// Strong Bullish: bull range, support at 57–63 holds and turns up.
+		// Strong Bullish: bull range, support at 57â€“63 holds and turns up.
 		{"support holds at 60 and turns up", []float64{74, 67, 59}, 63, strongBullish},
 		{"support zone but still falling", []float64{74, 67, 59}, 55, noEvent},
 		{"turns up but stays under 60", []float64{74, 67, 57}, 59, noEvent},
 		{"pullback too shallow to reach support", []float64{74, 70, 66}, 68, noEvent},
 
-		// Bearish range-shift: bull range, crosses below 40.
-		{"bull range crosses below 40", []float64{35, 66, 56, 47, 42}, 37, bearishShift},
-		{"bear range re-crossing 40 is continuation", []float64{32, 45, 52}, 39, noEvent},
+		// Bearish range-shift: bull, RSI has left the 60 zone, comes back and fails at it.
+		{"bull range fails at 60 after leaving it", []float64{70, 55, 61}, 58, bearishShift},
+		{"bull range first drop through 60 is not a shift", []float64{70, 66, 61}, 58, noEvent},
+		{"crossing 40 out of a bull range is no longer a signal", []float64{35, 66, 56, 47, 42}, 37, noEvent},
 
-		// Strong Bearish: bear range, resistance at 37–43 holds and turns down.
+		// Strong Bearish: bear range, resistance at 37â€“43 holds and turns down.
 		{"resistance holds at 40 and turns down", []float64{26, 33, 41}, 37, strongBearish},
 		{"resistance zone but still rising", []float64{26, 33, 41}, 48, noEvent},
 		{"turns down but stays over 40", []float64{26, 33, 43}, 41, noEvent},
 
+		// Sideways never signals.
+		{"sideways turning up at 40", []float64{30, 48, 39, 42, 55, 39}, 42, noEvent},
+		{"sideways turning down at 60", []float64{30, 48, 39, 42, 55, 60}, 57, noEvent},
 		{"no range established yet", []float64{45, 50, 55}, 62, noEvent},
 		{"no history", nil, 62, noEvent},
 	}
@@ -302,6 +308,29 @@ func TestRangeEventAt(t *testing.T) {
 				t.Errorf("rangeEventAt(%v, %v) = %v, want %v", tc.hist, tc.today, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestRangeCycle walks the RSI range-shift diagram end to end: bear â†’ (1) Bullish
+// Range-Shift â†’ sideways â†’ bull â†’ (2) Strong Bullish â†’ (3) Bearish Range-Shift â†’
+// sideways â†’ bear â†’ (4) Strong Bearish. Nothing else may fire.
+func TestRangeCycle(t *testing.T) {
+	path := []float64{
+		30, 20, 35, 25, // bear
+		48, 43, 41, 44, // leaves 40, pulls back, holds: (1)
+		55, 60, 50, 40, 45, // sideways: resistance at 60, support at 40
+		70, 65, 59, 64, // breaks into bull, holds 60: (2)
+		80, 70, 85, 75, 55, // bull, then drops out of the 60 zone
+		60, 56, // fails at 60: (3)
+		48, 40, 50, 60, 50, // sideways
+		30, 25, 40, 36, // breaks into bear, fails at 40: (4)
+		28, 33, 25,
+	}
+	want := map[int]rangeEvent{7: bullishShift, 16: strongBullish, 23: bearishShift, 32: strongBearish}
+	for i := 1; i < len(path); i++ {
+		if got := rangeEventAt(path[:i], path[i]); got != want[i] {
+			t.Errorf("bar %d (RSI %v â†’ %v): got %v, want %v", i, path[i-1], path[i], got, want[i])
+		}
 	}
 }
 
@@ -345,8 +374,8 @@ func TestSignalNames(t *testing.T) {
 		{
 			"weekly and daily range-shifts on the same day, weekly first",
 			with(rsiReadings{Monthly: 50, MonthlyOK: true}, func(x *rsiReadings) {
-				x.WeeklyHist, x.Weekly, x.WeeklyOK = []float64{35, 50, 58}, 61, true
-				x.DailyHist, x.Daily = []float64{38, 50, 59}, 62
+				x.WeeklyHist, x.Weekly, x.WeeklyOK = []float64{30, 48, 39}, 42, true
+				x.DailyHist, x.Daily = []float64{30, 47, 41}, 44
 			}),
 			[]string{"RSI (Weekly Bullish Range-Shift)", "RSI (Daily Bullish Range-Shift)"},
 		},

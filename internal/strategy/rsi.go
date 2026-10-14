@@ -19,21 +19,25 @@ import (
 //	RSI (Bearish GFS)           weekly & monthly < 40, daily turns down at 60
 //	RSI (Bearish Advanced GFS)  weekly & monthly < 40, daily turns down at 40
 //
-// Range signals: RSI lives in a bull range (40–80) in an uptrend and a bear
-// range (20–60) in a downtrend. Each of these is emitted for the daily and the
-// weekly RSI ("RSI (Daily ...)" / "RSI (Weekly ...)"):
+// Range signals: RSI trades in one of three regimes. Above 61 it is in a bull
+// regime (about 40–80, 60 is support), below 38 in a bear regime (about 20–60,
+// 40 is resistance), and a range-shift out of either drops it into a sideways
+// regime (38–61) that never signals. Each of these is emitted for the daily and
+// the weekly RSI ("RSI (Daily ...)" / "RSI (Weekly ...)"):
 //
-//	Bullish Range-Shift  bear range, RSI crosses above 60 — downtrend turning up
-//	Strong Bullish       bull range, RSI holds support at 57–63 and turns up
-//	Bearish Range-Shift  bull range, RSI crosses below 40 — uptrend turning down
-//	Strong Bearish       bear range, RSI meets resistance at 37–43 and turns down
+//	Bullish Range-Shift  bear: RSI has risen above the 40 zone, comes back to
+//	                     it and turns up above 40 — the downtrend is over
+//	Strong Bullish       bull: RSI holds support at 57–63 and turns up
+//	Bearish Range-Shift  bull: RSI has dropped below the 60 zone, comes back to
+//	                     it and turns down below 60 — the uptrend is over
+//	Strong Bearish       bear: RSI meets resistance at 37–43 and turns down
 //
 // Advanced GFS is a daily Strong Bullish confirmed by both higher timeframes,
 // so when both fire only Advanced GFS is emitted; likewise Bearish Advanced GFS
 // replaces a daily Strong Bearish.
 //
-// The strategy is stateless — the range a stock is in is re-derived from its RSI
-// history on every evaluation. One instance is safe to share across all
+// The strategy is stateless — the regime a stock is in is re-derived from its
+// RSI history on every evaluation. One instance is safe to share across all
 // instruments and all worker goroutines.
 type RSI struct {
 	Period int
@@ -81,19 +85,20 @@ var (
 	bearishGFSBand         = rsiBand{Lower: 56, Upper: 63, Level: 60}
 	bearishAdvancedGFSBand = rsiBand{Lower: 37, Upper: 43, Level: 40}
 
-	// supportZone is where a pullback in the bull range must hold for Strong
-	// Bullish; resistanceZone is where a rally in the bear range must fail for
-	// Strong Bearish.
+	// supportZone is where a pullback in the bull regime must hold for Strong
+	// Bullish, or fail from below for a Bearish Range-Shift; resistanceZone is
+	// where a rally in the bear regime must fail for Strong Bearish, or hold
+	// from above for a Bullish Range-Shift.
 	supportZone    = rsiBand{Lower: 57, Upper: 63, Level: 60}
 	resistanceZone = rsiBand{Lower: 37, Upper: 43, Level: 40}
 )
 
 const (
-	// bullRangeMark and bearRangeMark are the extremes that place a stock in a
-	// range: touching 60 or higher puts it in the bull range, 40 or lower in the
-	// bear range. Readings between them leave the range unchanged.
-	bullRangeMark = 60.0
-	bearRangeMark = 40.0
+	// bullBreak and bearBreak are where RSI breaks out of the 38–61 sideways
+	// band: above 61 puts a stock in the bull regime, below 38 in the bear
+	// regime, from whatever regime it was in.
+	bullBreak = 61.0
+	bearBreak = 38.0
 )
 
 // turnedUpAt reports whether RSI turned up at this band's level on the bar being
@@ -118,27 +123,75 @@ func turnedDownAt(prevRSI, rsi float64, b rsiBand) bool {
 	return prevRSI >= b.Lower && prevRSI <= b.Upper && rsi < prevRSI && rsi < b.Level
 }
 
-// rsiRange is the range a stock's RSI is trading in.
+// rsiRange is the regime a stock's RSI is trading in.
 type rsiRange int8
 
 const (
-	rangeUnknown rsiRange = iota // RSI has never left the 40–60 overlap
-	rangeBull                    // last extreme was 60 or higher
-	rangeBear                    // last extreme was 40 or lower
+	rangeSideways rsiRange = iota // between 38 and 61, or no trend yet
+	rangeBull                     // broke above 61; 60 is support
+	rangeBear                     // broke below 38; 40 is resistance
 )
 
-// priorRange walks an RSI history back to its most recent extreme and reports
-// the range that extreme placed the stock in.
-func priorRange(hist []float64) rsiRange {
-	for i := len(hist) - 1; i >= 0; i-- {
-		switch {
-		case hist[i] >= bullRangeMark:
-			return rangeBull
-		case hist[i] <= bearRangeMark:
-			return rangeBear
+// rangeState is the regime plus whether RSI has left the pivot zone of that
+// regime (below 57 in a bull, above 43 in a bear) since its last extreme. A
+// range-shift needs RSI to have left the zone and come back to it.
+type rangeState struct {
+	regime rsiRange
+	left   bool
+}
+
+// next advances the state by one bar and reports the event that bar fires.
+// prev is the previous bar's RSI and is ignored when hasPrev is false.
+func (s rangeState) next(prev, rsi float64, hasPrev bool) (rangeState, rangeEvent) {
+	switch {
+	case rsi > bullBreak && s.regime != rangeBull:
+		return rangeState{regime: rangeBull}, noEvent
+	case rsi < bearBreak && s.regime != rangeBear:
+		return rangeState{regime: rangeBear}, noEvent
+	}
+
+	ev := noEvent
+	switch s.regime {
+	case rangeBear:
+		if hasPrev && s.left && turnedUpAt(prev, rsi, resistanceZone) {
+			return rangeState{regime: rangeSideways}, bullishShift
+		}
+		if hasPrev && turnedDownAt(prev, rsi, resistanceZone) {
+			ev = strongBearish
+		}
+		if rsi > resistanceZone.Upper {
+			s.left = true
+		} else if rsi < resistanceZone.Lower {
+			s.left = false
+		}
+	case rangeBull:
+		if hasPrev && s.left && turnedDownAt(prev, rsi, supportZone) {
+			return rangeState{regime: rangeSideways}, bearishShift
+		}
+		if hasPrev && turnedUpAt(prev, rsi, supportZone) {
+			ev = strongBullish
+		}
+		if rsi < supportZone.Lower {
+			s.left = true
+		} else if rsi > supportZone.Upper {
+			s.left = false
 		}
 	}
-	return rangeUnknown
+	return s, ev
+}
+
+// rangeStateOf replays an RSI history from its start and returns the state
+// after its last bar.
+func rangeStateOf(hist []float64) rangeState {
+	var s rangeState
+	for i, v := range hist {
+		var prev float64
+		if i > 0 {
+			prev = hist[i-1]
+		}
+		s, _ = s.next(prev, v, i > 0)
+	}
+	return s
 }
 
 // rangeEvent is a range signal on one timeframe.
@@ -153,31 +206,14 @@ const (
 )
 
 // rangeEventAt classifies today's RSI against the history up to and including
-// yesterday. The four events need different ranges or opposite moves, so at
+// yesterday. The four events need different regimes or opposite moves, so at
 // most one can fire.
 func rangeEventAt(hist []float64, rsi float64) rangeEvent {
 	if len(hist) == 0 {
 		return noEvent
 	}
-	prev := hist[len(hist)-1]
-
-	switch priorRange(hist) {
-	case rangeBear:
-		if prev <= bullRangeMark && rsi > bullRangeMark {
-			return bullishShift
-		}
-		if turnedDownAt(prev, rsi, resistanceZone) {
-			return strongBearish
-		}
-	case rangeBull:
-		if prev >= bearRangeMark && rsi < bearRangeMark {
-			return bearishShift
-		}
-		if turnedUpAt(prev, rsi, supportZone) {
-			return strongBullish
-		}
-	}
-	return noEvent
+	_, ev := rangeStateOf(hist).next(hist[len(hist)-1], rsi, true)
+	return ev
 }
 
 // rangeEventNames maps a range event to its signal-name suffix.
